@@ -372,6 +372,8 @@ hgroup p {
     align-items: center;
     justify-content: center;
     z-index: 1000;
+    background: #181818 !important;
+    opacity: 1 !important;
 }
 
 .inline-modal-content {
@@ -396,6 +398,16 @@ dialog article footer {
 
 dialog article footer button {
     flex: 1;
+}
+
+/* Dialog/modal solid background fix */
+dialog {
+    background: #181818 !important;
+    opacity: 1 !important;
+}
+dialog::backdrop {
+    background: #181818 !important;
+    opacity: 1 !important;
 }
 
 /* Mobile optimizations */
@@ -428,6 +440,8 @@ dialog article footer button {
         margin: 0;
         padding: 0;
         border-radius: 0;
+        background: #181818 !important;
+        opacity: 1 !important;
     }
 
     dialog article {
