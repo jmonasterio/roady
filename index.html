@@ -62,7 +62,7 @@
                     <p>Schedule and manage your gigs</p>
                 </hgroup>
                 <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem;">
-                    <button @click="showAddGig = true">+ Create Gig</button>
+                    <button @click="openCreateGigDialog()">+ Create Gig</button>
                     <button @click="showPastGigs = !showPastGigs" class="secondary outline" x-text="showPastGigs ? 'Hide Past Gigs' : 'Show Past Gigs'"></button>
                 </div>
 

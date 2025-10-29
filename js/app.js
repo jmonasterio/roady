@@ -675,6 +675,26 @@ document.addEventListener('alpine:init', () => {
                 month: 'short',
                 day: 'numeric'
             });
+        },
+
+        openCreateGigDialog() {
+            // If no templates exist, create a default template
+            if (this.gigTypes.length === 0) {
+                const defaultTemplate = {
+                    name: 'Default Template',
+                    equipment: []
+                };
+                DB.addGigType(defaultTemplate).then(async () => {
+                    await this.loadData();
+                    // Optionally, select the new template for the new gig
+                    if (this.gigTypes.length > 0) {
+                        this.newGig.gigTypeId = this.gigTypes[0]._id;
+                    }
+                    this.showAddGig = true;
+                });
+            } else {
+                this.showAddGig = true;
+            }
         }
     }));
 });

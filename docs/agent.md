@@ -179,6 +179,45 @@ See PRD.md "Future Enhancements" section for planned features:
 - Notes per gig
 - Multi-device sync
 
+## Summary Recommendations for Your PWA
+
+- **Primary action (Create / Submit):** Use a sticky bottom button for main actions. This improves reachability on iOS & Android.
+- **Cancel / Back:** Place a button at the top-left. This matches user expectations on mobile platforms.
+- For very short forms, a top submit button is optional but not standard.
+- **Tech stack:** Pico.css and Alpine.js make sticky footers, buttons, and Alpine click handlers easy to implement.
+- **Usability:** Avoid top-only submit on long forms—users may miss it.
+
+### How to Implement Sticky Bottom Actions in a PWA (Alpine.js + Pico.css)
+
+**Option 1: Sticky Bottom Action (Recommended)**
+
+- Works on both iOS and Android guidelines.
+- Ensures users don’t have to scroll excessively to submit.
+
+```html
+<div class="form-container">
+  <form x-data="{ name: '' }" @submit.prevent="submitForm">
+    <label>Name</label>
+    <input type="text" x-model="name">
+
+    <label>Email</label>
+    <input type="email">
+    <!-- other form fields -->
+  </form>
+
+  <!-- Sticky footer -->
+  <div class="sticky-footer" style="position: sticky; bottom: 0; padding: 1rem; background: white; border-top: 1px solid #ddd;">
+    <button class="primary" @click="submitForm">Create</button>
+    <button class="secondary" @click="cancelForm">Cancel</button>
+  </div>
+</div>
+```
+
+**Notes:**
+- Pico.css buttons (`.primary`, `.secondary`) give good visual hierarchy.
+- `position: sticky; bottom: 0` keeps buttons visible at the bottom while scrolling.
+- Works well for long forms; meets both iOS & Android reachability guidelines.
+
 ## Questions?
 
 Refer to:
@@ -187,5 +226,3 @@ Refer to:
 3. [`terminology.md`](./terminology.md) - Terms and definitions
 4. [`README.md`](../README.md) - User guide
 5. Source code comments in `app.js` and `db.js`
-
-
