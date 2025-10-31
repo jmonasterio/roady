@@ -177,6 +177,17 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        async switchBand() {
+            // Clear tenant and show selection dialog
+            this.options.tenantId = '';
+            await this.saveOptions();
+
+            // Reset input and show dialog
+            this.tenantIdInput = 'demo';
+            this.showTenantSelection = true;
+            this.currentView = 'gigs'; // Reset to gigs view
+        },
+
         // Equipment methods
         async saveEquipment() {
             if (!this.newEquipment.name.trim()) return;
