@@ -43,7 +43,33 @@
 </head>
 <body>
     <div x-data="roady" x-cloak>
-        <nav class="container-fluid">
+        <!-- Tenant Selection Dialog -->
+        <dialog :open="showTenantSelection" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; margin: 0; padding: 0; border-radius: 0; background: var(--pico-background-color);">
+            <article style="display: flex; flex-direction: column; height: 100vh; justify-content: center; align-items: center; padding: 2rem;">
+                <div style="max-width: 400px; width: 100%;">
+                    <hgroup>
+                        <h2>Welcome to Roady</h2>
+                        <p>Equipment checklist for band roadies</p>
+                    </hgroup>
+
+                    <label>
+                        Organization Name
+                        <input
+                            type="text"
+                            x-model="tenantIdInput"
+                            placeholder="e.g., 'demo', 'my-band'"
+                            @keyup.enter="selectTenant()"
+                            autofocus
+                        />
+                        <small>Each organization has separate equipment and gig data</small>
+                    </label>
+
+                    <button @click="selectTenant()" style="width: 100%;">Get Started</button>
+                </div>
+            </article>
+        </dialog>
+
+        <nav class="container-fluid" x-show="!showTenantSelection">
             <ul>
                 <li><strong>Roady</strong></li>
             </ul>
@@ -54,7 +80,7 @@
             </ul>
         </nav>
 
-        <main class="container">
+        <main class="container" x-show="!showTenantSelection">
             <!-- Gigs View (Primary) -->
             <div x-show="currentView === 'gigs'">
                 <hgroup>
@@ -67,49 +93,46 @@
                 </div>
 
                 <dialog :open="showAddGig || editingGig">
-                    <article>
-                        <header>
-                            <a href="#" @click.prevent="cancelGigEdit()" aria-label="Close" class="close"></a>
-                            <h3 x-text="editingGig ? 'Edit Gig' : 'Create Gig'"></h3>
+                    <article style="display: flex; flex-direction: column; height: 100%;">
+                        <header style="display: flex; align-items: center; gap: 1rem;">
+                            <a href="#" @click.prevent="cancelGigEdit()" style="font-size: 1.5rem; text-decoration: none;">←</a>
+                            <h3 style="margin: 0;" x-text="editingGig ? 'Edit Gig' : 'Create Gig'"></h3>
                         </header>
-                        <input type="text" x-model="newGig.name" placeholder="Venue or gig name (e.g., 'Blue Note Jazz Club')" />
-                        <input type="date" x-model="newGig.date" />
-                        <select x-model="newGig.gigTypeId" :disabled="editingGig && isGigInPast(editingGig)">
-                            <option value="">Select template...</option>
-                            <template x-for="type in gigTypes" :key="type._id">
-                                <option :value="type._id" x-text="type.name"></option>
-                            </template>
-                        </select>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                        <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                            <input type="text" x-model="newGig.name" placeholder="Venue or gig name (e.g., 'Blue Note Jazz Club')" />
+                            <input type="date" x-model="newGig.date" />
+                            <select x-model="newGig.gigTypeId" :disabled="editingGig && isGigInPast(editingGig)">
+                                <option value="">Select template...</option>
+                                <template x-for="type in gigTypes" :key="type._id">
+                                    <option :value="type._id" x-text="type.name"></option>
+                                </template>
+                            </select>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                                <label>
+                                    Arrival Time (optional)
+                                    <input type="time" x-model="newGig.arrivalTime" value="18:00" />
+                                    <small class="text-muted">When crew should arrive</small>
+                                </label>
+                                <label>
+                                    Doors Open (optional)
+                                    <input type="time" x-model="newGig.doorsOpenTime" value="19:00" />
+                                    <small class="text-muted">When doors open to public</small>
+                                </label>
+                            </div>
                             <label>
-                                Arrival Time (optional)
-                                <input type="time" x-model="newGig.arrivalTime" value="18:00" />
-                                <small class="text-muted">When crew should arrive</small>
+                                Map Link (optional)
+                                <input type="url" x-model="newGig.mapLink" placeholder="https://maps.google.com/..." />
                             </label>
-                            <label>
-                                Doors Open (optional)
-                                <input type="time" x-model="newGig.doorsOpenTime" value="19:00" />
-                                <small class="text-muted">When doors open to public</small>
-                            </label>
+                            <p x-show="editingGig && isGigInPast(editingGig)" class="text-muted" style="font-size: 0.9rem;">
+                                Note: Changing template for past gigs is not supported.
+                            </p>
+                            <p x-show="editingGig && !isGigInPast(editingGig) && gigHasChecklistProgress(editingGig)" class="text-muted" style="font-size: 0.9rem; color: var(--pico-del-color, #c62828);">
+                                ⚠ Warning: Changing template will reset your checklist progress.
+                            </p>
                         </div>
-                        <label>
-                            Map Link (optional)
-                            <input type="url" x-model="newGig.mapLink" placeholder="https://maps.google.com/..." />
-                        </label>
-                        <p x-show="editingGig && isGigInPast(editingGig)" class="text-muted" style="font-size: 0.9rem;">
-                            Note: Changing template for past gigs is not supported.
-                        </p>
-                        <p x-show="editingGig && !isGigInPast(editingGig) && gigHasChecklistProgress(editingGig)" class="text-muted" style="font-size: 0.9rem; color: var(--pico-del-color, #c62828);">
-                            ⚠ Warning: Changing template will reset your checklist progress.
-                        </p>
-                        <footer style="display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <button x-show="editingGig" @click="confirmDeleteGig()" class="secondary outline" style="background: var(--pico-del-color, #c0392b); color: white;">Delete Gig</button>
-                            </div>
-                            <div style="display: flex; gap: 0.5rem;">
-                                <button @click="saveGig()" x-text="editingGig ? 'Save' : 'Create'"></button>
-                                <button @click="cancelGigEdit()" class="secondary">Cancel</button>
-                            </div>
+                        <footer style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+                            <button x-show="editingGig" @click="confirmDeleteGig()" class="secondary outline" style="background: var(--pico-del-color, #c0392b); color: white; margin: 0; flex: 0;">Delete</button>
+                            <button @click="saveGig()" x-text="editingGig ? 'Save' : 'Create'" style="margin: 0; margin-left: auto;"></button>
                         </footer>
                     </article>
                 </dialog>
@@ -145,193 +168,201 @@
 
                 <!-- Leaving for Gig (Load-out) -->
                 <dialog :open="selectedGigId && gigChecklistMode === 'leavingForGig'">
-                    <article>
-                        <header>
-                            <a href="#" @click.prevent="closeGigDetail()" aria-label="Close" class="close"></a>
-                            <h3 x-text="selectedGig ? (selectedGig.name || 'Unnamed Gig') : ''"></h3>
-                            <p class="text-muted" x-text="selectedGig ? formatDate(selectedGig.date) + ' • ' + getGigTypeName(selectedGig.gigTypeId) : ''"></p>
-                            <div x-show="selectedGig && (selectedGig.arrivalTime || selectedGig.doorsOpenTime)" style="margin-top: 0.5rem;">
-                                <p x-show="selectedGig && selectedGig.arrivalTime" class="text-muted" style="margin: 0;">
-                                    ⏰ Arrival: <span x-text="selectedGig.arrivalTime"></span>
-                                </p>
-                                <p x-show="selectedGig && selectedGig.doorsOpenTime" class="text-muted" style="margin: 0;">
-                                    🚪 Doors: <span x-text="selectedGig.doorsOpenTime"></span>
+                    <article style="display: flex; flex-direction: column; height: 100%;">
+                        <header style="display: flex; align-items: center; gap: 1rem;">
+                            <a href="#" @click.prevent="closeGigDetail()" style="font-size: 1.5rem; text-decoration: none;">←</a>
+                            <div style="flex: 1;">
+                                <h3 style="margin: 0;" x-text="selectedGig ? (selectedGig.name || 'Unnamed Gig') : ''"></h3>
+                                <p class="text-muted" x-text="selectedGig ? formatDate(selectedGig.date) + ' • ' + getGigTypeName(selectedGig.gigTypeId) : ''"></p>
+                                <div x-show="selectedGig && (selectedGig.arrivalTime || selectedGig.doorsOpenTime)" style="margin-top: 0.5rem;">
+                                    <p x-show="selectedGig && selectedGig.arrivalTime" class="text-muted" style="margin: 0;">
+                                        ⏰ Arrival: <span x-text="selectedGig.arrivalTime"></span>
+                                    </p>
+                                    <p x-show="selectedGig && selectedGig.doorsOpenTime" class="text-muted" style="margin: 0;">
+                                        🚪 Doors: <span x-text="selectedGig.doorsOpenTime"></span>
+                                    </p>
+                                </div>
+                                <p x-show="selectedGig && selectedGig.mapLink" style="margin-top: 0.5rem;">
+                                    <a :href="selectedGig.mapLink" target="_blank" rel="noopener">📍 Open Map</a>
                                 </p>
                             </div>
-                            <p x-show="selectedGig && selectedGig.mapLink" style="margin-top: 0.5rem;">
-                                <a :href="selectedGig.mapLink" target="_blank" rel="noopener">📍 Open Map</a>
-                            </p>
                         </header>
 
-                        <hgroup>
-                            <h4>Leaving for Gig</h4>
-                            <p>Load items into vehicle before departing</p>
-                        </hgroup>
+                        <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                            <hgroup>
+                                <h4>Leaving for Gig</h4>
+                                <p>Load items into vehicle before departing</p>
+                            </hgroup>
 
-                        <template x-if="selectedGig">
-                            <div>
-                                <!-- Progress bar -->
-                                <div class="checklist-progress">
-                                    <div class="progress-text">
-                                        <span x-text="getChecklistProgress(selectedGig.loadoutChecklist)"></span> loaded
-                                    </div>
-                                    <div class="progress-bar">
-                                        <div class="progress-bar-fill"
-                                             :style="`width: ${(selectedGig.loadoutChecklist.filter(i => i.checked).length / selectedGig.loadoutChecklist.length * 100).toFixed(0)}%`"></div>
-                                    </div>
-                                </div>
-
-                                <!-- Missing items section (prominent) -->
-                                <div class="checklist-section-missing">
-                                    <template x-for="(item, index) in selectedGig.loadoutChecklist" :key="index">
-                                        <div x-show="!item.checked">
-                                            <div class="checklist-item-missing" @click="toggleChecklistItem('loadout', index)">
-                                                <div class="item-icon">⬜</div>
-                                                <div class="item-content">
-                                                    <div class="item-name" x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
-                                                    <div class="item-action">Tap to mark as loaded</div>
-                                                </div>
-                                            </div>
+                            <template x-if="selectedGig">
+                                <div>
+                                    <!-- Progress bar -->
+                                    <div class="checklist-progress">
+                                        <div class="progress-text">
+                                            <span x-text="getChecklistProgress(selectedGig.loadoutChecklist)"></span> loaded
                                         </div>
-                                    </template>
-                                </div>
+                                        <div class="progress-bar">
+                                            <div class="progress-bar-fill"
+                                                 :style="`width: ${(selectedGig.loadoutChecklist.filter(i => i.checked).length / selectedGig.loadoutChecklist.length * 100).toFixed(0)}%`"></div>
+                                        </div>
+                                    </div>
 
-                                <!-- Loaded items section (collapsible) -->
-                                <div class="checklist-section-loaded">
-                                    <h5 class="section-heading-loaded" @click="showLoadedItems = !showLoadedItems" style="cursor: pointer;">
-                                        ✓ LOADED
-                                        <span x-text="showLoadedItems ? '▼' : '▶'"></span>
-                                    </h5>
-                                    <div x-show="showLoadedItems" class="checklist">
+                                    <!-- Missing items section (prominent) -->
+                                    <div class="checklist-section-missing">
                                         <template x-for="(item, index) in selectedGig.loadoutChecklist" :key="index">
-                                            <div x-show="item.checked">
-                                                <div class="checklist-item-loaded" @click="toggleChecklistItem('loadout', index)">
-                                                    <div class="item-icon">✓</div>
-                                                    <div class="item-name" x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
+                                            <div x-show="!item.checked">
+                                                <div class="checklist-item-missing" @click="toggleChecklistItem('loadout', index)">
+                                                    <div class="item-icon">⬜</div>
+                                                    <div class="item-content">
+                                                        <div class="item-name" x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
+                                                        <div class="item-action">Tap to mark as loaded</div>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </template>
                                     </div>
+
+                                    <!-- Loaded items section (collapsible) -->
+                                    <div class="checklist-section-loaded">
+                                        <h5 class="section-heading-loaded" @click="showLoadedItems = !showLoadedItems" style="cursor: pointer;">
+                                            ✓ LOADED
+                                            <span x-text="showLoadedItems ? '▼' : '▶'"></span>
+                                        </h5>
+                                        <div x-show="showLoadedItems" class="checklist">
+                                            <template x-for="(item, index) in selectedGig.loadoutChecklist" :key="index">
+                                                <div x-show="item.checked">
+                                                    <div class="checklist-item-loaded" @click="toggleChecklistItem('loadout', index)">
+                                                        <div class="item-icon">✓</div>
+                                                        <div class="item-name" x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+
+                            <div class="add-item-section">
+                                <button @click="showAddItemToGig = true" class="secondary outline" style="width: 100%;">+ Add Item to This Gig</button>
+                            </div>
+
+                            <!-- Add item to gig modal -->
+                            <div x-show="showAddItemToGig" class="inline-modal">
+                                <div class="inline-modal-content">
+                                    <h5>Add Item</h5>
+                                    <select x-model="newItemForGig.equipmentId">
+                                        <option value="">Select from equipment catalog...</option>
+                                        <template x-for="item in getAvailableEquipment()" :key="item._id">
+                                            <option :value="item._id" x-text="item.name"></option>
+                                        </template>
+                                    </select>
+                                    <p style="text-align: center; margin: 0.5rem 0;">- OR -</p>
+                                    <input type="text" x-model="newItemForGig.newEquipmentName" placeholder="Or type new item name to create it..." />
+                                    <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+                                        <button @click="addItemToGig()">Add</button>
+                                        <button @click="cancelAddItemToGig()" class="secondary">Cancel</button>
+                                    </div>
                                 </div>
                             </div>
-                        </template>
 
-                        <div class="add-item-section">
-                            <button @click="showAddItemToGig = true" class="secondary outline" style="width: 100%;">+ Add Item to This Gig</button>
-                        </div>
-
-                        <!-- Add item to gig modal -->
-                        <div x-show="showAddItemToGig" class="inline-modal">
-                            <div class="inline-modal-content">
-                                <h5>Add Item</h5>
-                                <select x-model="newItemForGig.equipmentId">
-                                    <option value="">Select from equipment catalog...</option>
-                                    <template x-for="item in getAvailableEquipment()" :key="item._id">
-                                        <option :value="item._id" x-text="item.name"></option>
-                                    </template>
-                                </select>
-                                <p style="text-align: center; margin: 0.5rem 0;">- OR -</p>
-                                <input type="text" x-model="newItemForGig.newEquipmentName" placeholder="Or type new item name to create it..." />
-                                <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
-                                    <button @click="addItemToGig()">Add</button>
-                                    <button @click="cancelAddItemToGig()" class="secondary">Cancel</button>
+                            <!-- Confirmation modal for adding to template -->
+                            <div x-show="showAddToGigTypeConfirm" class="inline-modal">
+                                <div class="inline-modal-content">
+                                    <h5>Add to Template?</h5>
+                                    <p x-text="`Do you want to add &quot;${newItemForGig.addedEquipmentName || ''}&quot; to the &quot;${selectedGig ? getGigTypeName(selectedGig.gigTypeId) : ''}&quot; template for all future gigs?`"></p>
+                                    <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+                                        <button @click="confirmAddToGigType(true)">Yes, Add to Template</button>
+                                        <button @click="confirmAddToGigType(false)" class="secondary">No, Only This Gig</button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Confirmation modal for adding to template -->
-                        <div x-show="showAddToGigTypeConfirm" class="inline-modal">
-                            <div class="inline-modal-content">
-                                <h5>Add to Template?</h5>
-                                <p x-text="`Do you want to add &quot;${newItemForGig.addedEquipmentName || ''}&quot; to the &quot;${selectedGig ? getGigTypeName(selectedGig.gigTypeId) : ''}&quot; template for all future gigs?`"></p>
-                                <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
-                                    <button @click="confirmAddToGigType(true)">Yes, Add to Template</button>
-                                    <button @click="confirmAddToGigType(false)" class="secondary">No, Only This Gig</button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <footer>
-                            <button @click="closeGigDetail()">Close</button>
+                        <footer style="display: flex; justify-content: flex-end;">
+                            <button @click="closeGigDetail()" style="margin: 0;">Done</button>
                         </footer>
                     </article>
                 </dialog>
 
                 <!-- Leaving from Gig (Load-in) -->
                 <dialog :open="selectedGigId && gigChecklistMode === 'leavingFromGig'">
-                    <article>
-                        <header>
-                            <a href="#" @click.prevent="closeGigDetail()" aria-label="Close" class="close"></a>
-                            <h3 x-text="selectedGig ? (selectedGig.name || 'Unnamed Gig') : ''"></h3>
-                            <p class="text-muted" x-text="selectedGig ? formatDate(selectedGig.date) + ' • ' + getGigTypeName(selectedGig.gigTypeId) : ''"></p>
-                            <div x-show="selectedGig && (selectedGig.arrivalTime || selectedGig.doorsOpenTime)" style="margin-top: 0.5rem;">
-                                <p x-show="selectedGig && selectedGig.arrivalTime" class="text-muted" style="margin: 0;">
-                                    ⏰ Arrival: <span x-text="selectedGig.arrivalTime"></span>
-                                </p>
-                                <p x-show="selectedGig && selectedGig.doorsOpenTime" class="text-muted" style="margin: 0;">
-                                    🚪 Doors: <span x-text="selectedGig.doorsOpenTime"></span>
+                    <article style="display: flex; flex-direction: column; height: 100%;">
+                        <header style="display: flex; align-items: center; gap: 1rem;">
+                            <a href="#" @click.prevent="closeGigDetail()" style="font-size: 1.5rem; text-decoration: none;">←</a>
+                            <div style="flex: 1;">
+                                <h3 style="margin: 0;" x-text="selectedGig ? (selectedGig.name || 'Unnamed Gig') : ''"></h3>
+                                <p class="text-muted" x-text="selectedGig ? formatDate(selectedGig.date) + ' • ' + getGigTypeName(selectedGig.gigTypeId) : ''"></p>
+                                <div x-show="selectedGig && (selectedGig.arrivalTime || selectedGig.doorsOpenTime)" style="margin-top: 0.5rem;">
+                                    <p x-show="selectedGig && selectedGig.arrivalTime" class="text-muted" style="margin: 0;">
+                                        ⏰ Arrival: <span x-text="selectedGig.arrivalTime"></span>
+                                    </p>
+                                    <p x-show="selectedGig && selectedGig.doorsOpenTime" class="text-muted" style="margin: 0;">
+                                        🚪 Doors: <span x-text="selectedGig.doorsOpenTime"></span>
+                                    </p>
+                                </div>
+                                <p x-show="selectedGig && selectedGig.mapLink" style="margin-top: 0.5rem;">
+                                    <a :href="selectedGig.mapLink" target="_blank" rel="noopener">📍 Open Map</a>
                                 </p>
                             </div>
-                            <p x-show="selectedGig && selectedGig.mapLink" style="margin-top: 0.5rem;">
-                                <a :href="selectedGig.mapLink" target="_blank" rel="noopener">📍 Open Map</a>
-                            </p>
                         </header>
 
-                        <hgroup>
-                            <h4>Leaving from Gig</h4>
-                            <p>Pack items back into vehicle after the show</p>
-                        </hgroup>
+                        <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                            <hgroup>
+                                <h4>Leaving from Gig</h4>
+                                <p>Pack items back into vehicle after the show</p>
+                            </hgroup>
 
-                        <template x-if="selectedGig">
-                            <div>
-                                <!-- Progress bar -->
-                                <div class="checklist-progress">
-                                    <div class="progress-text">
-                                        <span x-text="getChecklistProgress(selectedGig.loadinChecklist)"></span> packed
-                                    </div>
-                                    <div class="progress-bar">
-                                        <div class="progress-bar-fill"
-                                             :style="`width: ${(selectedGig.loadinChecklist.filter(i => i.checked).length / selectedGig.loadinChecklist.length * 100).toFixed(0)}%`"></div>
-                                    </div>
-                                </div>
-
-                                <!-- Missing items section (what you still need to find and pack) -->
-                                <div class="checklist-section-missing">
-                                    <template x-for="(item, index) in selectedGig.loadinChecklist" :key="index">
-                                        <div x-show="!item.checked">
-                                            <div class="checklist-item-missing" @click="toggleLoadinItem(index)">
-                                                <div class="item-icon">⬜</div>
-                                                <div class="item-content">
-                                                    <div class="item-name" x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
-                                                    <div class="item-action">Tap to mark as packed</div>
-                                                </div>
-                                            </div>
+                            <template x-if="selectedGig">
+                                <div>
+                                    <!-- Progress bar -->
+                                    <div class="checklist-progress">
+                                        <div class="progress-text">
+                                            <span x-text="getChecklistProgress(selectedGig.loadinChecklist)"></span> packed
                                         </div>
-                                    </template>
-                                </div>
+                                        <div class="progress-bar">
+                                            <div class="progress-bar-fill"
+                                                 :style="`width: ${(selectedGig.loadinChecklist.filter(i => i.checked).length / selectedGig.loadinChecklist.length * 100).toFixed(0)}%`"></div>
+                                        </div>
+                                    </div>
 
-                                <!-- Packed items section (collapsible) -->
-                                <div class="checklist-section-loaded">
-                                    <h5 class="section-heading-loaded" @click="showPackedItems = !showPackedItems" style="cursor: pointer;">
-                                        ✓ PACKED
-                                        <span x-text="showPackedItems ? '▼' : '▶'"></span>
-                                    </h5>
-                                    <div x-show="showPackedItems" class="checklist">
+                                    <!-- Missing items section (what you still need to find and pack) -->
+                                    <div class="checklist-section-missing">
                                         <template x-for="(item, index) in selectedGig.loadinChecklist" :key="index">
-                                            <div x-show="item.checked">
-                                                <div class="checklist-item-loaded" @click="toggleLoadinItem(index)">
-                                                    <div class="item-icon">✓</div>
-                                                    <div class="item-name" x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
+                                            <div x-show="!item.checked">
+                                                <div class="checklist-item-missing" @click="toggleLoadinItem(index)">
+                                                    <div class="item-icon">⬜</div>
+                                                    <div class="item-content">
+                                                        <div class="item-name" x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
+                                                        <div class="item-action">Tap to mark as packed</div>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </template>
                                     </div>
-                                </div>
-                            </div>
-                        </template>
 
-                        <footer>
-                            <button @click="closeGigDetail()">Close</button>
+                                    <!-- Packed items section (collapsible) -->
+                                    <div class="checklist-section-loaded">
+                                        <h5 class="section-heading-loaded" @click="showPackedItems = !showPackedItems" style="cursor: pointer;">
+                                            ✓ PACKED
+                                            <span x-text="showPackedItems ? '▼' : '▶'"></span>
+                                        </h5>
+                                        <div x-show="showPackedItems" class="checklist">
+                                            <template x-for="(item, index) in selectedGig.loadinChecklist" :key="index">
+                                                <div x-show="item.checked">
+                                                    <div class="checklist-item-loaded" @click="toggleLoadinItem(index)">
+                                                        <div class="item-icon">✓</div>
+                                                        <div class="item-name" x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+
+                        <footer style="display: flex; justify-content: flex-end;">
+                            <button @click="closeGigDetail()" style="margin: 0;">Done</button>
                         </footer>
                     </article>
                 </dialog>
@@ -364,21 +395,18 @@
                     </div>
 
                 <dialog :open="showAddEquipment || editingEquipment">
-                    <article>
-                        <header>
-                            <a href="#" @click.prevent="cancelEquipmentEdit()" aria-label="Close" class="close"></a>
-                            <h3 x-text="editingEquipment ? 'Edit Equipment Item' : 'Add Equipment Item'"></h3>
+                    <article style="display: flex; flex-direction: column; height: 100%;">
+                        <header style="display: flex; align-items: center; gap: 1rem;">
+                            <a href="#" @click.prevent="cancelEquipmentEdit()" style="font-size: 1.5rem; text-decoration: none;">←</a>
+                            <h3 style="margin: 0;" x-text="editingEquipment ? 'Edit Equipment Item' : 'Add Equipment Item'"></h3>
                         </header>
-                        <input type="text" x-model="newEquipment.name" placeholder="Item name (e.g., 'Shure SM58 Mic')" />
-                        <textarea x-model="newEquipment.description" placeholder="Description or notes (optional)"></textarea>
-                        <footer style="display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <button x-show="editingEquipment" @click="deleteEquipment(editingEquipment._id); cancelEquipmentEdit()" class="secondary outline" style="background: var(--pico-del-color, #c0392b); color: white;">Delete Item</button>
-                            </div>
-                            <div style="display: flex; gap: 0.5rem;">
-                                <button @click="saveEquipment()">Save</button>
-                                <button @click="cancelEquipmentEdit()" class="secondary">Cancel</button>
-                            </div>
+                        <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                            <input type="text" x-model="newEquipment.name" placeholder="Item name (e.g., 'Shure SM58 Mic')" />
+                            <textarea x-model="newEquipment.description" placeholder="Description or notes (optional)"></textarea>
+                        </div>
+                        <footer style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+                            <button x-show="editingEquipment" @click="deleteEquipment(editingEquipment._id); cancelEquipmentEdit()" class="secondary outline" style="background: var(--pico-del-color, #c0392b); color: white; margin: 0; flex: 0;">Delete</button>
+                            <button @click="saveEquipment()" style="margin: 0; margin-left: auto;">Save</button>
                         </footer>
                     </article>
                 </dialog>
@@ -405,37 +433,38 @@
                     </div>
 
                 <dialog :open="showAddGigType || editingGigType">
-                    <article>
-                        <header>
-                            <a href="#" @click.prevent="cancelGigTypeEdit()" aria-label="Close" class="close"></a>
-                            <h3 x-text="editingGigType ? 'Edit Template' : 'Add Template'"></h3>
+                    <article style="display: flex; flex-direction: column; height: 100%;">
+                        <header style="display: flex; align-items: center; gap: 1rem;">
+                            <a href="#" @click.prevent="cancelGigTypeEdit()" style="font-size: 1.5rem; text-decoration: none;">←</a>
+                            <h3 style="margin: 0;" x-text="editingGigType ? 'Edit Template' : 'Add Template'"></h3>
                         </header>
-                        <input type="text" x-model="newGigType.name" placeholder="Template name (e.g., 'Small Venue', 'Festival')" />
-                        <fieldset class="equipment-selector">
-                            <legend>Select Equipment for This Template</legend>
-                            <template x-for="item in equipment" :key="item._id">
-                                <div class="equipment-quantity-row">
-                                    <label style="flex: 1; margin: 0;">
-                                        <input type="checkbox"
-                                               :checked="newGigType.equipment.some(e => e.equipmentId === item._id)"
-                                               @change="toggleEquipmentInTemplate(item._id)" />
-                                        <span x-text="item.name"></span>
-                                    </label>
-                                    <div x-show="newGigType.equipment.some(e => e.equipmentId === item._id)" style="display: flex; align-items: center; gap: 0.5rem;">
-                                        <label style="margin: 0; font-size: 0.9rem;">Qty:</label>
-                                        <input type="number"
-                                               min="1"
-                                               max="99"
-                                               style="width: 60px; padding: 0.25rem 0.5rem;"
-                                               :value="(newGigType.equipment.find(e => e.equipmentId === item._id) || {}).quantity || 1"
-                                               @input="updateEquipmentQuantity(item._id, $event.target.value)" />
+                        <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                            <input type="text" x-model="newGigType.name" placeholder="Template name (e.g., 'Small Venue', 'Festival')" />
+                            <fieldset class="equipment-selector">
+                                <legend>Select Equipment for This Template</legend>
+                                <template x-for="item in equipment" :key="item._id">
+                                    <div class="equipment-quantity-row">
+                                        <label style="flex: 1; margin: 0;">
+                                            <input type="checkbox"
+                                                   :checked="newGigType.equipment.some(e => e.equipmentId === item._id)"
+                                                   @change="toggleEquipmentInTemplate(item._id)" />
+                                            <span x-text="item.name"></span>
+                                        </label>
+                                        <div x-show="newGigType.equipment.some(e => e.equipmentId === item._id)" style="display: flex; align-items: center; gap: 0.5rem;">
+                                            <label style="margin: 0; font-size: 0.9rem;">Qty:</label>
+                                            <input type="number"
+                                                   min="1"
+                                                   max="99"
+                                                   style="width: 60px; padding: 0.25rem 0.5rem;"
+                                                   :value="(newGigType.equipment.find(e => e.equipmentId === item._id) || {}).quantity || 1"
+                                                   @input="updateEquipmentQuantity(item._id, $event.target.value)" />
+                                        </div>
                                     </div>
-                                </div>
-                            </template>
-                        </fieldset>
-                        <footer>
-                            <button @click="saveGigType">Save</button>
-                            <button @click="cancelGigTypeEdit()" class="secondary">Cancel</button>
+                                </template>
+                            </fieldset>
+                        </div>
+                        <footer style="display: flex; justify-content: flex-end;">
+                            <button @click="saveGigType" style="margin: 0;">Save</button>
                         </footer>
                     </article>
                 </dialog>

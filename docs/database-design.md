@@ -4,6 +4,30 @@ Roady uses **PouchDB** for client-side data storage, which provides an IndexedDB
 
 ## Database Schema
 
+We maintain three separate PouchDB databases.
+
+## Multi-Tenant Architecture
+
+All documents include a `tenant` field for complete data isolation. This allows multiple organizations/teams to use the same database instance while keeping their data separate.
+
+- **Tenant ID**: User-defined string (e.g., "demo", "blue-notes-band", "acme-touring")
+- **Storage**: Tenant ID stored in local `roady_options` database (never synced)
+- **Queries**: All queries filter on both `type` AND `tenant` fields
+- **Isolation**: Complete - documents from one tenant never visible to another
+- **Migration**: Existing documents without `tenant` field are ignored (no migration needed)
+
+### Example: Multiple Tenants
+```
+Database: roady
+├── {blue-notes-band} equipment, gig_types, gigs
+├── {demo} equipment, gig_types, gigs
+└── {acme-touring} equipment, gig_types, gigs
+```
+
+Each tenant has completely separate catalogs, templates, and gigs.
+
+---
+
 We maintain three separate PouchDB databases:
 
 ### 1. Equipment Catalog (`equipment`)
@@ -14,6 +38,8 @@ Individual pieces of equipment in your inventory.
 {
   _id: "equipment_[timestamp]",
   _rev: "[pouch_revision]",  // PouchDB internal revision tracking
+  type: "equipment",          // Document type
+  tenant: "String",           // Tenant ID (e.g., "demo", "band-name")
   name: "String",             // e.g., "Shure SM58 Mic"
   description: "String",      // Optional notes about the equipment
   createdAt: "ISO8601 timestamp"
@@ -32,6 +58,8 @@ Templates for different types of shows with pre-selected equipment lists.
 {
   _id: "gigtype_[timestamp]",
   _rev: "[pouch_revision]",
+  type: "gig_type",            // Document type
+  tenant: "String",            // Tenant ID (e.g., "demo", "band-name")
   name: "String",              // e.g., "Small Club", "Outdoor Festival"
   equipmentIds: ["String"],    // Array of equipment._id references
   createdAt: "ISO8601 timestamp"
@@ -50,6 +78,8 @@ Specific scheduled gigs with their checklists.
 {
   _id: "gig_[timestamp]",
   _rev: "[pouch_revision]",
+  type: "gig",                 // Document type
+  tenant: "String",            // Tenant ID (e.g., "demo", "band-name")
   name: "String",              // e.g., "Blue Note Jazz Club"
   gigTypeId: "String",         // Reference to gigTypes._id
   date: "YYYY-MM-DD",          // Gig date

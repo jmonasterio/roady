@@ -4,10 +4,17 @@ const DB = {
     optionsDb: null,
     syncHandler: null,
     syncStatus: 'idle',
+    currentTenant: 'demo', // Default tenant
 
     init() {
         this.db = new PouchDB('roady');
         this.optionsDb = new PouchDB('roady_options'); // Local-only, never synced
+    },
+
+    // Set current tenant
+    setTenant(tenantId) {
+        this.currentTenant = tenantId;
+        console.log('Tenant switched to:', tenantId);
     },
 
     // Setup sync with remote CouchDB
@@ -149,13 +156,14 @@ const DB = {
         });
         return result.rows
             .map(row => row.doc)
-            .filter(doc => doc.type === 'equipment');
+            .filter(doc => doc.type === 'equipment' && doc.tenant === this.currentTenant);
     },
 
     async addEquipment(item) {
         const doc = {
             _id: 'equipment_' + Date.now(),
             type: 'equipment',
+            tenant: this.currentTenant,
             name: item.name,
             description: item.description || '',
             createdAt: new Date().toISOString()
@@ -184,13 +192,14 @@ const DB = {
         });
         return result.rows
             .map(row => row.doc)
-            .filter(doc => doc.type === 'gig_type');
+            .filter(doc => doc.type === 'gig_type' && doc.tenant === this.currentTenant);
     },
 
     async addGigType(type) {
         const doc = {
             _id: 'gig_type_' + Date.now(),
             type: 'gig_type',
+            tenant: this.currentTenant,
             name: type.name,
             equipmentIds: type.equipmentIds || [],
             createdAt: new Date().toISOString()
@@ -214,10 +223,10 @@ const DB = {
             startkey: 'gig_',
             endkey: 'gig_\uffff'
         });
-        // Filter to only documents with type='gig' and sort by date ascending (soonest first)
+        // Filter to only documents with type='gig' and tenant, sort by date ascending (soonest first)
         return result.rows
             .map(row => row.doc)
-            .filter(doc => doc.type === 'gig')
+            .filter(doc => doc.type === 'gig' && doc.tenant === this.currentTenant)
             .sort((a, b) => new Date(a.date) - new Date(b.date));
     },
 
@@ -243,6 +252,7 @@ const DB = {
         const doc = {
             _id: 'gig_' + Date.now(),
             type: 'gig',
+            tenant: this.currentTenant,
             name: gig.name,
             gigTypeId: gig.gigTypeId,
             date: gig.date,

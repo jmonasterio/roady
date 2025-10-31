@@ -10,6 +10,10 @@ document.addEventListener('alpine:init', () => {
         selectedGig: null,
         gigChecklistMode: null, // 'leavingForGig' or 'leavingFromGig'
 
+        // Tenant state
+        showTenantSelection: false,
+        tenantIdInput: 'demo',
+
         // UI state
         showAddEquipment: false,
         showAddGigType: false,
@@ -47,15 +51,27 @@ document.addEventListener('alpine:init', () => {
             addedEquipmentName: ''
         },
         options: {
-            couchDbUrl: ''
+            couchDbUrl: '',
+            tenantId: ''
         },
         syncStatus: 'idle',
         syncError: null,
 
         // Initialize
         async init() {
-            await this.loadData();
             await this.loadOptions();
+
+            // If no tenant, show selection dialog
+            if (!this.options.tenantId) {
+                this.showTenantSelection = true;
+                return; // Don't load data yet
+            }
+
+            // Set tenant in DB layer
+            DB.setTenant(this.options.tenantId);
+
+            // Load data
+            await this.loadData();
             this.setupSyncListeners();
 
             // Setup sync if URL is configured
@@ -138,6 +154,27 @@ document.addEventListener('alpine:init', () => {
             if (this.syncStatus === 'paused') return 'Connected';
             if (this.syncStatus === 'idle') return 'Not syncing';
             return 'Connected';
+        },
+
+        // Tenant methods
+        async selectTenant() {
+            if (!this.tenantIdInput.trim()) return;
+
+            this.options.tenantId = this.tenantIdInput.trim();
+            await this.saveOptions();
+
+            // Set tenant in DB layer
+            DB.setTenant(this.options.tenantId);
+
+            // Hide dialog and load data
+            this.showTenantSelection = false;
+            await this.loadData();
+            this.setupSyncListeners();
+
+            // Setup sync if URL is configured
+            if (this.options.couchDbUrl) {
+                this.enableSync();
+            }
         },
 
         // Equipment methods

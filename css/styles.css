@@ -63,9 +63,9 @@ section h3 {
 
 /* Equipment selector in dialog */
 .equipment-selector {
-    background: #222 !important;
-    border: 1px solid #444 !important;
-    color: #fff !important;
+    background: var(--pico-form-element-background-color) !important;
+    border: 1px solid var(--pico-form-element-border-color) !important;
+    color: var(--pico-color) !important;
     border-radius: var(--pico-border-radius);
     padding: 1rem;
     max-height: none !important;
@@ -140,7 +140,8 @@ section h3 {
 .checklist-progress {
     margin-bottom: 1.5rem;
     padding: 1rem;
-    background: var(--pico-card-background-color);
+    background: var(--pico-form-element-background-color);
+    border: 1px solid var(--pico-form-element-border-color);
     border-radius: var(--pico-border-radius);
 }
 
@@ -152,14 +153,14 @@ section h3 {
 
 .progress-bar {
     height: 8px;
-    background: #2e3440 !important;
+    background: var(--pico-form-element-border-color) !important;
     border-radius: 4px;
     overflow: hidden;
 }
 
 .progress-bar-fill {
     height: 100%;
-    background: linear-gradient(90deg, #5e81ac, #81a1c1) !important;
+    background: var(--pico-form-element-valid-border-color, #10b981) !important;
     transition: width 0.3s ease;
 }
 
@@ -173,11 +174,13 @@ section h3 {
 }
 
 .section-heading-missing {
-    background: linear-gradient(135deg, #fef3c7, #fde68a);
-    color: #92400e;
+    background: var(--pico-form-element-background-color);
+    color: var(--pico-color);
     padding: 0.75rem 1rem;
     border-radius: var(--pico-border-radius);
-    border-left: 4px solid #f59e0b;
+    border-left: 4px solid var(--pico-form-element-invalid-border-color, #ef4444);
+    border: 1px solid var(--pico-form-element-border-color);
+    border-left: 4px solid var(--pico-form-element-invalid-border-color, #ef4444);
     margin-bottom: 1rem;
     font-size: 0.9rem;
     font-weight: bold;
@@ -185,10 +188,11 @@ section h3 {
 }
 
 .section-heading-loaded {
-    color: #8fbcbb !important;
+    color: var(--pico-form-element-valid-border-color, #10b981) !important;
     padding: 0.75rem 1rem;
     border-radius: var(--pico-border-radius);
-    background: #232a36 !important;
+    background: var(--pico-form-element-background-color) !important;
+    border: 1px solid var(--pico-form-element-border-color);
     margin-bottom: 1rem;
     font-size: 0.85rem;
     font-weight: bold;
@@ -217,18 +221,18 @@ section h3 {
     align-items: center;
     gap: 1rem;
     padding: 1rem;
-    background: #232a36 !important;
-    border: 2px solid #3b4252 !important;
+    background: var(--pico-form-element-background-color) !important;
+    border: 2px solid var(--pico-form-element-invalid-border-color, #ef4444) !important;
     border-radius: var(--pico-border-radius);
     margin-bottom: 0.75rem;
     cursor: pointer;
     transition: all 0.2s;
-    color: #fff !important;
+    color: var(--pico-color) !important;
 }
 
 .checklist-item-missing:hover {
-    background: #fef3c7;
-    border-color: #fbbf24;
+    background: var(--pico-form-element-hover-background-color);
+    border-color: var(--pico-form-element-invalid-border-color, #ef4444);
     transform: translateX(4px);
 }
 
@@ -245,12 +249,12 @@ section h3 {
     font-weight: 500;
     font-size: 1.05rem;
     margin-bottom: 0.25rem;
-    color: #fff !important;
+    color: var(--pico-color) !important;
 }
 
 .checklist-item-missing .item-action {
     font-size: 0.85rem;
-    color: #8fbcbb !important;
+    color: var(--pico-muted-color) !important;
     font-style: italic;
 }
 
@@ -264,8 +268,8 @@ section h3 {
     cursor: pointer;
     transition: all 0.2s;
     border-radius: var(--pico-border-radius);
-    background: #222 !important;
-    color: #bfc7d5 !important;
+    background: var(--pico-form-element-background-color) !important;
+    color: var(--pico-muted-color) !important;
 }
 
 .checklist-item-loaded:hover {
@@ -274,7 +278,7 @@ section h3 {
 }
 
 .checklist-item-loaded .item-icon {
-    color: #10b981;
+    color: var(--pico-form-element-valid-border-color, #10b981);
     font-size: 1.2rem;
 }
 
@@ -284,14 +288,14 @@ section h3 {
 
 /* All loaded message */
 .all-loaded-message {
-    background: linear-gradient(135deg, #d1fae5, #a7f3d0);
-    border: 2px solid #10b981;
+    background: var(--pico-form-element-background-color);
+    border: 2px solid var(--pico-form-element-valid-border-color, #10b981);
     border-radius: var(--pico-border-radius);
     margin-bottom: 1.5rem;
 }
 
 .all-loaded-message h5 {
-    color: #065f46;
+    color: var(--pico-form-element-valid-border-color, #10b981);
     margin-top: 0.5rem;
 }
 
@@ -375,7 +379,7 @@ hgroup p {
     left: 0;
     right: 0;
     bottom: 0;
-    background: #181818 !important;
+    background: rgba(0, 0, 0, 0.5) !important;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -384,8 +388,9 @@ hgroup p {
 }
 
 .inline-modal-content {
-    background: var(--pico-background-color);
+    background: var(--pico-card-background-color);
     padding: 2rem;
+    border: 1px solid var(--pico-form-element-border-color);
     border-radius: var(--pico-border-radius);
     max-width: 500px;
     width: 90%;
@@ -397,24 +402,69 @@ hgroup p {
     margin-bottom: 1rem;
 }
 
+/* Dialog header with native app back button */
+dialog article header {
+    background: var(--pico-card-background-color);
+    border-bottom: 1px solid var(--pico-form-element-border-color);
+    padding: var(--pico-spacing);
+    margin: 0;
+    flex-shrink: 0;
+}
+
+dialog article header a {
+    color: var(--pico-form-element-valid-border-color, #10b981);
+    cursor: pointer;
+    padding: 0.5rem;
+    margin: -0.5rem;
+    display: inline-flex;
+    align-items: center;
+}
+
+dialog article header a:hover {
+    opacity: 0.8;
+}
+
 /* Dialog footer buttons */
 dialog article footer {
     display: flex;
     gap: 0.5rem;
+    flex-shrink: 0;
+    position: sticky;
+    bottom: 0;
+    background: var(--pico-card-background-color);
+    border-top: 1px solid var(--pico-form-element-border-color);
+    padding: var(--pico-spacing);
+    margin: 0;
 }
 
 dialog article footer button {
-    flex: 1;
+    min-width: 100px;
 }
 
-/* Dialog/modal solid background fix */
+/* Dialog/modal solid background fix - Full-screen overlay style */
 dialog {
-    background: #181818 !important;
+    max-width: 100%;
+    max-height: 100%;
+    width: 100vw;
+    height: 100vh;
+    margin: 0;
+    padding: 0;
+    border-radius: 0;
+    background: var(--pico-background-color) !important;
     opacity: 1 !important;
 }
 dialog::backdrop {
-    background: #181818 !important;
-    opacity: 1 !important;
+    background: transparent !important;
+    opacity: 0 !important;
+}
+dialog article {
+    height: 100vh;
+    max-height: 100vh;
+    margin: 0;
+    border-radius: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--pico-background-color);
 }
 
 /* Overlay full-screen panel for ToGig/FromGig */
@@ -424,7 +474,7 @@ dialog::backdrop {
     left: 0;
     width: 100vw;
     height: 100vh;
-    background: #181818;
+    background: var(--pico-background-color);
     z-index: 2000;
     display: flex;
     flex-direction: column;
@@ -439,8 +489,8 @@ dialog::backdrop {
     left: 0;
     right: 0;
     padding: 1rem;
-    background: #232a36;
-    border-top: 1px solid #222;
+    background: var(--pico-card-background-color);
+    border-top: 1px solid var(--pico-form-element-border-color);
     z-index: 10;
     display: flex;
     justify-content: flex-end;
@@ -490,33 +540,12 @@ main.container {
         flex: 1;
     }
 
-    /* Full-screen dialogs on mobile */
-    dialog {
-        max-width: 100%;
-        max-height: 100%;
-        width: 100vw;
-        height: 100vh;
-        margin: 0;
-        padding: 0;
-        border-radius: 0;
-        background: #181818 !important;
-        opacity: 1 !important;
-    }
-
-    dialog article {
-        height: 100vh;
-        max-height: 100vh;
-        margin: 0;
-        border-radius: 0;
-        display: flex;
-        flex-direction: column;
-    }
-
+    /* Dialogs already full-screen, just ensure proper layout */
     dialog article header {
         flex-shrink: 0;
     }
 
-    dialog article > *:not(header):not(footer) {
+    dialog article > div:not(header):not(footer) {
         flex: 1;
         overflow-y: auto;
     }
@@ -561,57 +590,4 @@ main.container {
     }
 }
 
-/* Dark mode support - Better visibility for cards/rows */
-[data-theme="dark"] article {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-[data-theme="dark"] article:hover {
-    background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(255, 255, 255, 0.15);
-}
-
-[data-theme="dark"] .gig-item,
-[data-theme="dark"] .equipment-item,
-[data-theme="dark"] .gigtype-item {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-[data-theme="dark"] .gig-item:hover,
-[data-theme="dark"] .equipment-item:hover,
-[data-theme="dark"] .gigtype-item:hover {
-    background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(255, 255, 255, 0.15);
-}
-
-/* Dark mode checklist items */
-[data-theme="dark"] .checklist-item:hover {
-    background: rgba(255, 255, 255, 0.05);
-}
-
-/* Dark mode - lighter missing items background */
-[data-theme="dark"] .checklist-item-missing {
-    background: rgba(251, 191, 36, 0.15);
-    border-color: rgba(251, 191, 36, 0.4);
-}
-
-[data-theme="dark"] .checklist-item-missing:hover {
-    background: rgba(251, 191, 36, 0.2);
-    border-color: rgba(251, 191, 36, 0.5);
-}
-
-/* Dark mode - section headings */
-[data-theme="dark"] .section-heading-missing {
-    background: rgba(251, 191, 36, 0.2);
-    border-left-color: rgba(251, 191, 36, 0.6);
-    color: #fbbf24;
-}
-
-/* Auto dark mode support */
-@media (prefers-color-scheme: dark) {
-    .checklist-item:hover {
-        background: rgba(255, 255, 255, 0.05);
-    }
-}
+/* Pico CSS already handles dark theme - no overrides needed */
