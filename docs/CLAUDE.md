@@ -6,12 +6,60 @@ This document provides guidance for AI agents (like Claude Code) working on the 
 
 **Roady** is a web-based equipment checklist application for band roadies and touring professionals. It helps ensure all equipment is loaded before traveling to a gig and collected before leaving the venue.
 
-## Architecture
+## Architecture.
+- Roady and Couch-Sitter are PWA javascript + Alpine apps that use index DB + PouchDB. PouchDB is used to, optionally, sync indexDB to mycouch.
+- Mycouch is a couchdb proxy that will run onserver (in cloud), and adds tenancy model on top of couchDB which also runs in cloud. The couchdb is backed up to R2.
+- Couch-sitter is allowed to touch, thru mycouch, the special couch-sitter db in couchdb. This contains apps, tenants, and users.
+- Roady is only allowed to touch the "roady" DB via mycouch, with a JWT from clerk. The JWT will use REST APIs in mycouch to get a tenant id into the JWT. The mycouch proxy injects the tenant ID into every request. 
+- Mycouch is supposed to do metadata injections, and the roady is supposed to reload the JWT token
+ after.
+- Roady can manage more than one band in a tenant. For now we only have one, but the bandID should should be in every document.
+- In our couchdb documents, we only have one DB per app, like roady. All the documents have a type=xxx, field that represents documents in that table.
+- Tenants are the concept for Roady invitations. A user will be able to invite other user's to see their personal tenant. For now, a user can only have one personal tenant.
 
-- **Frontend**: Alpine.js (no build step)
-- **Database**: PouchDB (in-browser, no backend)
-- **Styling**: Pico CSS + custom CSS
-- **No compilation**: Direct browser execution
+**Primary Use Case**: Serves as the authentication gateway for **Roady PWA** (band management app) and Couch-Sitter (admin for apps, tenants, user).
+
+## Guidelines for PRDs and coding.
+- All work should be organized into a PRD. The work in the PRD should be a standalone, complete deliverable, when possible.
+- PRD plan should have TESTS first. Plan to write tests before code, especially in in python.
+- Service and UI tests should use a DAL layer to allow testing without corrupting the DB. This is particularly important for mycouch python layer, and less so for javascript which uses index DB. When testing indexDB, we can turn off pouchDB sync.
+- PRD's do not need time estimates. 
+- I appreciate phased plans that can be tested as we go.
+
+## Claude Code Usage Guidelines
+
+**IMPORTANT**: When using file operation tools like `Read()`, `Write()`, and `Edit()`:
+- Always use **full absolute paths** with **forward slashes** (`/`)
+- Example: `C:/github/mycouch/src/couchdb_jwt_proxy/main.py`
+- Never use backslashes or relative paths
+- This prevents file access errors on Windows systems
+
+**Correct Examples:**
+```python
+Read("C:/github/mycouch/src/couchdb_jwt_proxy/main.py")
+Write("C:/github/mycouch/.env.example", content)
+Edit("C:/github/mycouch/CLAUDE.md", old_string, new_string)
+```
+
+**Incorrect Examples (will fail):**
+```python
+Read("C:\\github\\mycouch\\main.py")  # Backslashes
+Read("src/couchdb_jwt_proxy/main.py")  # Relative path
+```
+
+
+**DO NOT make any git mutations without explicit permission.**
+
+This includes:
+- ❌ `git add` - Do NOT stage files
+- ❌ `git commit` - Do NOT create commits
+- ❌ `git push` - Do NOT push to remote
+- ❌ `git branch` - Do NOT create branches
+- ❌ `git stash` - Do NOT stash changes
+
+
+Ask for permission before any git operations
+Let the user review changes before committing
 
 ## Key Documents
 

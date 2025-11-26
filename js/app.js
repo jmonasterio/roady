@@ -1,124 +1,11 @@
-// Alpine.js main application
-document.addEventListener('alpine:init', () => {
-    Alpine.data('roady', () => ({
-        // State
-        currentView: 'gigs',
-        equipment: [],
-        gigTypes: [],
-        gigs: [],
-        selectedGigId: null,
-        selectedGig: null,
-        gigChecklistMode: null, // 'leavingForGig' or 'leavingFromGig'
 
-        // Tenant state
-        showTenantSelection: false,
-        tenantIdInput: 'demo',
-
-        // UI state
-        showAddEquipment: false,
-        showAddGigType: false,
-        showAddGig: false,
-        editingEquipment: null,
-        editingGigType: null,
-        editingGig: null,
-        showAddItemToGig: false,
-        showAddToGigTypeConfirm: false,
-        showPastGigs: false,
-        showLoadedItems: false,
-        showPackedItems: false,
-
-        // Form data
-        newEquipment: {
-            name: '',
-            description: ''
-        },
-        newGigType: {
-            name: '',
-            equipment: []  // Array of { equipmentId, quantity }
-        },
-        newGig: {
-            name: '',
-            date: '',
-            gigTypeId: '',
-            arrivalTime: '',
-            doorsOpenTime: '',
-            mapLink: ''
-        },
-        newItemForGig: {
-            equipmentId: '',
-            newEquipmentName: '',
-            addedEquipmentId: null,
-            addedEquipmentName: ''
-        },
-        options: {
-            couchDbUrl: '',
-            tenantId: ''
-        },
-        syncStatus: 'idle',
-        syncError: null,
-
-        // Initialize
-        async init() {
-            await this.loadOptions();
-
-            // If no tenant, show selection dialog
-            if (!this.options.tenantId) {
-                this.showTenantSelection = true;
-                return; // Don't load data yet
-            }
-
-            // Set tenant in DB layer
-            DB.setTenant(this.options.tenantId);
-
-            // Load data
-            await this.loadData();
-            this.setupSyncListeners();
-
-            // Setup sync if URL is configured
-            if (this.options.couchDbUrl) {
-                this.enableSync();
-            }
-        },
-
-        async loadData() {
-            this.equipment = await DB.getAllEquipment();
-            this.gigTypes = await DB.getAllGigTypes();
-            this.gigs = await DB.getAllGigs();
-        },
-
-        // Options methods
-        async loadOptions() {
-            try {
-                const saved = await DB.getOptions();
-                if (saved && Object.keys(saved).length > 0) {
-                    this.options = saved;
-                }
-            } catch (e) {
-                console.error('Failed to load options:', e);
-            }
-        },
-
-        async saveOptions() {
-            try {
-                await DB.saveOptions(this.options);
-            } catch (e) {
-                console.error('Failed to save options:', e);
-            }
-
-            // Update sync when URL changes
-            if (this.options.couchDbUrl && this.options.couchDbUrl.trim()) {
-                this.enableSync();
-            } else {
-                this.disableSync();
-            }
-        },
 
         // Sync methods
         enableSync() {
             if (!this.options.couchDbUrl) return;
 
             this.syncError = null;
-            const success = DB.setupSync(this.options.couchDbUrl);
+            const success = await Sync.setupSync(DB.getDb(), this.options.couchDbUrl);
 
             if (!success) {
                 this.syncError = 'Failed to connect to CouchDB server. Check URL.';
@@ -126,25 +13,26 @@ document.addEventListener('alpine:init', () => {
         },
 
         disableSync() {
-            DB.cancelSync();
+            Sync.cancelSync();
             this.syncStatus = 'idle';
             this.syncError = null;
         },
 
         setupSyncListeners() {
             window.addEventListener('db-sync-change', (e) => {
-                this.syncStatus = DB.getSyncStatus();
+                this.syncStatus = Sync.getSyncStatus();
                 // Reload data when sync receives changes
                 this.loadData();
+                this.loadDeletedItems();
             });
 
             window.addEventListener('db-sync-error', (e) => {
                 this.syncError = `Sync error: ${e.detail.error.message || 'Unknown error'}`;
-                this.syncStatus = DB.getSyncStatus();
+                this.syncStatus = Sync.getSyncStatus();
             });
 
             window.addEventListener('db-sync-paused', (e) => {
-                this.syncStatus = DB.getSyncStatus();
+                this.syncStatus = Sync.getSyncStatus();
             });
         },
 
@@ -168,7 +56,10 @@ document.addEventListener('alpine:init', () => {
 
             // Hide dialog and load data
             this.showTenantSelection = false;
+            this.isLoading = true;
             await this.loadData();
+            await this.loadDeletedItems();
+            this.isLoading = false;
             this.setupSyncListeners();
 
             // Setup sync if URL is configured
@@ -183,7 +74,7 @@ document.addEventListener('alpine:init', () => {
             await this.saveOptions();
 
             // Reset input and show dialog
-            this.tenantIdInput = 'demo';
+            this.tenantIdInput = '';
             this.showTenantSelection = true;
             this.currentView = 'gigs'; // Reset to gigs view
         },
@@ -222,9 +113,26 @@ document.addEventListener('alpine:init', () => {
         },
 
         async deleteEquipment(id) {
-            if (confirm('Delete this equipment item?')) {
+            const confirmed = await this.showConfirmation(
+                'Delete Equipment',
+                'Delete this equipment item?',
+                'Delete',
+                true
+            );
+
+            if (confirmed) {
+                const equipment = this.equipment.find(e => e._id === id);
                 await DB.deleteEquipment(id);
                 await this.loadData();
+
+                // Show snackbar with undo
+                this.showSnackbar(
+                    `Deleted "${equipment?.name || 'Equipment'}"`,
+                    async () => {
+                        await DB.restoreEquipment(id);
+                        await this.loadData();
+                    }
+                );
             }
         },
 
@@ -242,61 +150,12 @@ document.addEventListener('alpine:init', () => {
                     name: this.newGigType.name,
                     equipment: this.newGigType.equipment
                 });
-
-                // Update future gigs with new equipment list
-                await this.updateFutureGigs(this.editingGigType._id, this.newGigType.equipment);
             } else {
                 await DB.addGigType(this.newGigType);
             }
 
             await this.loadData();
             this.cancelGigTypeEdit();
-        },
-
-        async updateFutureGigs(gigTypeId, newEquipment) {
-            const today = new Date().toISOString().split('T')[0];
-            const futureGigs = this.gigs.filter(g =>
-                g.gigTypeId === gigTypeId && g.date >= today
-            );
-
-            for (const gig of futureGigs) {
-                // Build new checklists with the updated equipment (expand quantities)
-                const newChecklist = [];
-                newEquipment.forEach(({ equipmentId, quantity }) => {
-                    for (let i = 1; i <= quantity; i++) {
-                        // Preserve checked state if item already exists
-                        const existingLoadout = gig.loadoutChecklist.find(item =>
-                            item.equipmentId === equipmentId && item.itemNumber === i
-                        );
-                        const existingLoadin = gig.loadinChecklist.find(item =>
-                            item.equipmentId === equipmentId && item.itemNumber === i
-                        );
-
-                        newChecklist.push({
-                            loadout: {
-                                equipmentId,
-                                itemNumber: i,
-                                checked: existingLoadout?.checked || false
-                            },
-                            loadin: {
-                                equipmentId,
-                                itemNumber: i,
-                                checked: existingLoadin?.checked || false
-                            }
-                        });
-                    }
-                });
-
-                gig.loadoutChecklist = newChecklist.map(item => item.loadout);
-                gig.loadinChecklist = newChecklist.map(item => item.loadin);
-
-                await DB.updateGig(gig);
-            }
-
-            // Refresh selected gig if it was one of the updated ones
-            if (this.selectedGigId && futureGigs.some(g => g._id === this.selectedGigId)) {
-                this.selectedGig = await DB.getGig(this.selectedGigId);
-            }
         },
 
         editGigType(gigType) {
@@ -349,9 +208,26 @@ document.addEventListener('alpine:init', () => {
         },
 
         async deleteGigType(id) {
-            if (confirm('Delete this gig type?')) {
+            const confirmed = await this.showConfirmation(
+                'Delete Template',
+                'Delete this template? Existing gigs will keep their current equipment list.',
+                'Delete',
+                true
+            );
+
+            if (confirmed) {
+                const gigType = this.gigTypes.find(t => t._id === id);
                 await DB.deleteGigType(id);
                 await this.loadData();
+
+                // Show snackbar with undo
+                this.showSnackbar(
+                    `Deleted template "${gigType?.name || 'Template'}"`,
+                    async () => {
+                        await DB.restoreGigType(id);
+                        await this.loadData();
+                    }
+                );
             }
         },
 
@@ -360,13 +236,18 @@ document.addEventListener('alpine:init', () => {
         },
 
         getEquipmentCount(gigType) {
-            // Handle both old and new format
+            // Handle both old and new format, only counting active (non-deleted) equipment
             if (gigType.equipment) {
-                // New format: sum up quantities
-                return gigType.equipment.reduce((sum, item) => sum + item.quantity, 0);
+                // New format: sum up quantities for equipment that still exists
+                return gigType.equipment.reduce((sum, item) => {
+                    const equipmentExists = this.equipment.some(e => e._id === item.equipmentId);
+                    return equipmentExists ? sum + item.quantity : sum;
+                }, 0);
             } else if (gigType.equipmentIds) {
-                // Old format: just count
-                return gigType.equipmentIds.length;
+                // Old format: count only equipment that still exists
+                return gigType.equipmentIds.filter(id =>
+                    this.equipment.some(e => e._id === id)
+                ).length;
             }
             return 0;
         },
@@ -382,7 +263,14 @@ document.addEventListener('alpine:init', () => {
                 if (gigTypeChanged) {
                     // Check if there's checklist progress
                     if (this.gigHasChecklistProgress(this.editingGig)) {
-                        if (!confirm('Changing the template will reset all checklist progress. Are you sure you want to continue?')) {
+                        const confirmed = await this.showConfirmation(
+                            'Change Template?',
+                            'Changing the template will reset all checklist progress. Are you sure you want to continue?',
+                            'Change Template',
+                            true
+                        );
+
+                        if (!confirmed) {
                             return;
                         }
                     }
@@ -458,18 +346,55 @@ document.addEventListener('alpine:init', () => {
         async confirmDeleteGig() {
             if (!this.editingGig) return;
 
-            if (confirm(`Are you sure you want to delete "${this.editingGig.name}"? This cannot be undone.`)) {
+            const confirmed = await this.showConfirmation(
+                'Delete Gig',
+                `Delete "${this.editingGig.name}"? You can restore it from Trash.`,
+                'Delete',
+                true
+            );
+
+            if (confirmed) {
                 await DB.deleteGig(this.editingGig._id);
+                const gigName = this.editingGig.name;
                 await this.loadData();
                 this.cancelGigEdit();
+
+                // Show snackbar with undo
+                this.showSnackbar(
+                    `Deleted gig "${gigName}"`,
+                    async () => {
+                        await DB.restoreGig(this.editingGig._id);
+                        await this.loadData();
+                    }
+                );
             }
         },
 
         async deleteGig(id) {
-            if (confirm('Delete this gig?')) {
+            const gig = this.gigs.find(g => g._id === id);
+            if (!gig) return;
+
+            const confirmed = await this.showConfirmation(
+                'Delete Gig',
+                `Delete "${gig.name}"? You can restore it from Trash.`,
+                'Delete',
+                true
+            );
+
+            if (confirmed) {
                 await DB.deleteGig(id);
+                const gigName = gig.name;
                 await this.loadData();
                 this.closeGigDetail();
+
+                // Show snackbar with undo
+                this.showSnackbar(
+                    `Deleted gig "${gigName}"`,
+                    async () => {
+                        await DB.restoreGig(id);
+                        await this.loadData();
+                    }
+                );
             }
         },
 
@@ -481,6 +406,40 @@ document.addEventListener('alpine:init', () => {
             this.selectedGigId = gigId;
             this.gigChecklistMode = mode; // 'leavingForGig' or 'leavingFromGig'
             this.selectedGig = await DB.getGig(gigId);
+
+            // If gig is clean (not dirty), sync with current template
+            if (!this.gigHasChecklistProgress(this.selectedGig)) {
+                const gigType = this.gigTypes.find(t => t._id === this.selectedGig.gigTypeId);
+                if (gigType) {
+                    const templateEquipment = gigType.equipment || gigType.equipmentIds?.map(id => ({ equipmentId: id, quantity: 1 })) || [];
+
+                    // Build new checklists from current template (only include non-deleted equipment)
+                    const newChecklist = [];
+                    templateEquipment.forEach(({ equipmentId, quantity }) => {
+                        // Only add if equipment still exists (not deleted)
+                        if (this.equipment.some(e => e._id === equipmentId)) {
+                            for (let i = 1; i <= quantity; i++) {
+                                newChecklist.push({
+                                    equipmentId,
+                                    itemNumber: i,
+                                    checked: false
+                                });
+                            }
+                        }
+                    });
+
+                    // Only update if equipment changed
+                    const currentEquipmentIds = new Set(this.selectedGig.loadoutChecklist.map(i => i.equipmentId));
+                    const newEquipmentIds = new Set(newChecklist.map(i => i.equipmentId));
+
+                    if (currentEquipmentIds.size !== newEquipmentIds.size ||
+                        ![...currentEquipmentIds].every(id => newEquipmentIds.has(id))) {
+                        this.selectedGig.loadoutChecklist = newChecklist;
+                        this.selectedGig.loadinChecklist = [...newChecklist];
+                        await DB.updateGig(this.selectedGig);
+                    }
+                }
+            }
         },
 
         closeGigDetail() {
@@ -743,6 +702,66 @@ document.addEventListener('alpine:init', () => {
             } else {
                 this.showAddGig = true;
             }
+        },
+
+        // Confirmation dialog helpers
+        showConfirmation(title, message, confirmText = 'Confirm', isDangerous = false) {
+            return new Promise((resolve) => {
+                this.confirmationDialog = {
+                    isOpen: true,
+                    title,
+                    message,
+                    confirmText,
+                    cancelText: 'Cancel',
+                    action: resolve,
+                    isDangerous
+                };
+            });
+        },
+
+        async confirmDialogAction(confirmed) {
+            const action = this.confirmationDialog.action;
+            this.confirmationDialog.isOpen = false;
+
+            if (confirmed && action) {
+                action(true);
+            } else if (action) {
+                action(false);
+            }
+        },
+
+        // Snackbar helpers
+        showSnackbar(message, undoAction, duration = 4000) {
+            // Clear any existing timeout
+            if (this.snackbar.timeout) {
+                clearTimeout(this.snackbar.timeout);
+            }
+
+            this.snackbar = {
+                isOpen: true,
+                message,
+                action: undoAction,
+                timeout: setTimeout(() => {
+                    this.snackbar.isOpen = false;
+                }, duration)
+            };
+        },
+
+        async snackbarUndo() {
+            if (this.snackbar.action) {
+                if (this.snackbar.timeout) {
+                    clearTimeout(this.snackbar.timeout);
+                }
+                this.snackbar.isOpen = false;
+                await this.snackbar.action();
+            }
+        },
+
+        dismissSnackbar() {
+            if (this.snackbar.timeout) {
+                clearTimeout(this.snackbar.timeout);
+            }
+            this.snackbar.isOpen = false;
         }
     }));
 });

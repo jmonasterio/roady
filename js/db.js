@@ -2,118 +2,24 @@
 const DB = {
     db: null,
     optionsDb: null,
-    syncHandler: null,
-    syncStatus: 'idle',
-    currentTenant: 'demo', // Default tenant
+    currentTenant: null, // Will be set by TenantManager
 
     init() {
+        // Initialize local PouchDB without auth (auth handled at higher level)
         this.db = new PouchDB('roady');
+
+        // These are local indexDB only.
         this.optionsDb = new PouchDB('roady_options'); // Local-only, never synced
     },
 
     // Set current tenant
     setTenant(tenantId) {
         this.currentTenant = tenantId;
-        console.log('Tenant switched to:', tenantId);
     },
 
-    // Setup sync with remote CouchDB
-    setupSync(couchDbUrl) {
-        if (!couchDbUrl || !couchDbUrl.trim()) {
-            this.cancelSync();
-            return;
-        }
-
-        // Cancel existing sync if any
-        this.cancelSync();
-
-        try {
-            // Ensure URL doesn't end with slash
-            const baseUrl = couchDbUrl.replace(/\/$/, '');
-
-            // Configure remote DB options
-            // Authentication is handled via URL: https://username:password@server.com
-            const remoteOptions = {
-                skip_setup: true // Don't try to create DB if it doesn't exist
-            };
-
-            const remoteDB = new PouchDB(`${baseUrl}/roady`, remoteOptions);
-
-            // Test connection first
-            remoteDB.info().then(info => {
-                console.log('✓ Remote DB connected:', info);
-            }).catch(err => {
-                console.error('✗ Failed to connect to remote DB:', err);
-                window.dispatchEvent(new CustomEvent('db-sync-error', {
-                    detail: { error: { message: 'Connection failed. Check CORS settings and URL format.' } }
-                }));
-            });
-
-            // Setup bidirectional continuous sync
-            this.syncHandler = this.db.sync(remoteDB, {
-                live: true,
-                retry: true
-            })
-            .on('change', (info) => {
-                console.log('Sync change:', info);
-                console.log('Direction:', info.direction, 'Docs changed:', info.change?.docs?.length || 0);
-                this.syncStatus = 'active';
-                // Dispatch event for UI to listen
-                window.dispatchEvent(new CustomEvent('db-sync-change', {
-                    detail: { info }
-                }));
-            })
-            .on('paused', (err) => {
-                console.log('Sync paused', err ? `with error: ${err}` : '(waiting for changes)');
-                this.syncStatus = err ? 'error' : 'paused';
-                window.dispatchEvent(new CustomEvent('db-sync-paused', {
-                    detail: { error: err }
-                }));
-            })
-            .on('active', () => {
-                console.log('Sync active');
-                this.syncStatus = 'active';
-            })
-            .on('denied', (err) => {
-                console.error('Sync denied:', err);
-                this.syncStatus = 'error';
-                window.dispatchEvent(new CustomEvent('db-sync-error', {
-                    detail: { error: err }
-                }));
-            })
-            .on('complete', (info) => {
-                console.log('Sync complete:', info);
-                this.syncStatus = 'complete';
-            })
-            .on('error', (err) => {
-                console.error('Sync error:', err);
-                this.syncStatus = 'error';
-                window.dispatchEvent(new CustomEvent('db-sync-error', {
-                    detail: { error: err }
-                }));
-            });
-
-            console.log('CouchDB sync setup complete for:', baseUrl);
-            return true;
-        } catch (err) {
-            console.error('Failed to setup CouchDB sync:', err);
-            return false;
-        }
-    },
-
-    // Cancel all active sync
-    cancelSync() {
-        if (this.syncHandler) {
-            this.syncHandler.cancel();
-            this.syncHandler = null;
-            this.syncStatus = 'idle';
-        }
-        console.log('CouchDB sync cancelled');
-    },
-
-    // Get sync status
-    getSyncStatus() {
-        return this.syncStatus;
+    // Get database instance (for sync operations)
+    getDb() {
+        return this.db;
     },
 
     // Options operations (local-only, never synced)
@@ -156,7 +62,19 @@ const DB = {
         });
         return result.rows
             .map(row => row.doc)
-            .filter(doc => doc.type === 'equipment' && doc.tenant === this.currentTenant);
+            .filter(doc => doc.type === 'equipment' && doc.tenant === this.currentTenant && !doc.deletedAt);
+    },
+
+    async getDeletedEquipment() {
+        const result = await this.db.allDocs({
+            include_docs: true,
+            startkey: 'equipment_',
+            endkey: 'equipment_\uffff'
+        });
+        return result.rows
+            .map(row => row.doc)
+            .filter(doc => doc.type === 'equipment' && doc.tenant === this.currentTenant && doc.deletedAt)
+            .sort((a, b) => new Date(a.deletedAt) - new Date(b.deletedAt));
     },
 
     async addEquipment(item) {
@@ -175,12 +93,27 @@ const DB = {
     },
 
     async updateEquipment(equipment) {
-        return await this.db.put(equipment);
+        try {
+            // Fetch latest version to ensure _rev is current (prevents 409 conflicts)
+            const latest = await this.db.get(equipment._id);
+            equipment._rev = latest._rev;
+            return await this.db.put(equipment);
+        } catch (err) {
+            // If fetch fails, try update anyway
+            return await this.db.put(equipment);
+        }
     },
 
     async deleteEquipment(id) {
         const doc = await this.db.get(id);
-        return await this.db.remove(doc);
+        doc.deletedAt = new Date().toISOString();
+        return await this.db.put(doc);
+    },
+
+    async restoreEquipment(id) {
+        const doc = await this.db.get(id);
+        delete doc.deletedAt;
+        return await this.db.put(doc);
     },
 
     // Gig Type operations
@@ -192,7 +125,19 @@ const DB = {
         });
         return result.rows
             .map(row => row.doc)
-            .filter(doc => doc.type === 'gig_type' && doc.tenant === this.currentTenant);
+            .filter(doc => doc.type === 'gig_type' && doc.tenant === this.currentTenant && !doc.deletedAt);
+    },
+
+    async getDeletedGigTypes() {
+        const result = await this.db.allDocs({
+            include_docs: true,
+            startkey: 'gig_type_',
+            endkey: 'gig_type_\uffff'
+        });
+        return result.rows
+            .map(row => row.doc)
+            .filter(doc => doc.type === 'gig_type' && doc.tenant === this.currentTenant && doc.deletedAt)
+            .sort((a, b) => new Date(a.deletedAt) - new Date(b.deletedAt));
     },
 
     async addGigType(type) {
@@ -208,12 +153,27 @@ const DB = {
     },
 
     async updateGigType(gigType) {
-        return await this.db.put(gigType);
+        try {
+            // Fetch latest version to ensure _rev is current (prevents 409 conflicts)
+            const latest = await this.db.get(gigType._id);
+            gigType._rev = latest._rev;
+            return await this.db.put(gigType);
+        } catch (err) {
+            // If fetch fails, try update anyway
+            return await this.db.put(gigType);
+        }
     },
 
     async deleteGigType(id) {
         const doc = await this.db.get(id);
-        return await this.db.remove(doc);
+        doc.deletedAt = new Date().toISOString();
+        return await this.db.put(doc);
+    },
+
+    async restoreGigType(id) {
+        const doc = await this.db.get(id);
+        delete doc.deletedAt;
+        return await this.db.put(doc);
     },
 
     // Gig operations
@@ -226,8 +186,20 @@ const DB = {
         // Filter to only documents with type='gig' and tenant, sort by date ascending (soonest first)
         return result.rows
             .map(row => row.doc)
-            .filter(doc => doc.type === 'gig' && doc.tenant === this.currentTenant)
+            .filter(doc => doc.type === 'gig' && doc.tenant === this.currentTenant && !doc.deletedAt)
             .sort((a, b) => new Date(a.date) - new Date(b.date));
+    },
+
+    async getDeletedGigs() {
+        const result = await this.db.allDocs({
+            include_docs: true,
+            startkey: 'gig_',
+            endkey: 'gig_\uffff'
+        });
+        return result.rows
+            .map(row => row.doc)
+            .filter(doc => doc.type === 'gig' && doc.tenant === this.currentTenant && doc.deletedAt)
+            .sort((a, b) => new Date(a.deletedAt) - new Date(b.deletedAt));
     },
 
     async getGig(id) {
@@ -267,14 +239,36 @@ const DB = {
     },
 
     async updateGig(gig) {
-        return await this.db.put(gig);
+        try {
+            // Fetch latest version to ensure _rev is current (prevents 409 conflicts)
+            const latest = await this.db.get(gig._id);
+            gig._rev = latest._rev;
+            return await this.db.put(gig);
+        } catch (err) {
+            // If fetch fails, try update anyway
+            return await this.db.put(gig);
+        }
     },
 
     async deleteGig(id) {
         const doc = await this.db.get(id);
-        return await this.db.remove(doc);
+        doc.deletedAt = new Date().toISOString();
+        return await this.db.put(doc);
+    },
+
+    async restoreGig(id) {
+        const doc = await this.db.get(id);
+        delete doc.deletedAt;
+        return await this.db.put(doc);
     }
 };
 
 // Initialize database on load
 DB.init();
+
+// Export for use in other modules
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = DB;
+} else {
+    window.DB = DB;
+}

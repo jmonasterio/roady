@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -23,8 +24,287 @@
     <script src="https://cdn.jsdelivr.net/npm/pouchdb@8.0.1/dist/pouchdb.min.js"></script>
     <script src="https://unpkg.com/nostr-tools@2.5.2/lib/nostr.bundle.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <script src="js/db.js"></script>
+    <script src="js/clerk.js"></script>\n
+    <script src="js/auth.js"></script>\n
+    <script src="js/sync.js"></script>\n
+    <script src="js/clerk.js"></script>\n
+    <script src="js/auth.js"></script>\n
+    <script src="js/sync.js"></script>\n
+    <script src="js/db.js"></script>\n
+    <script src="js/storage.js"></script>
+    <script src="js/tenant-manager.js"></script>
     <script src="js/app.js"></script>
+
+    <script async crossorigin="anonymous"
+        data-clerk-publishable-key="pk_test_ZGVzaXJlZC1sYWItMjcuY2xlcmsuYWNjb3VudHMuZGV2JA"
+        src="https://desired-lab-27.clerk.accounts.dev/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
+        type="text/javascript">
+        </script>
+
+    <script type="text/javascript">
+        /**
+         * Initialize authenticated app with tenant context
+         * This is the critical flow that must happen before showing any UI
+         */
+        async function initializeAuthenticatedApp(navBar, mainContent) {
+            try {
+                console.log('🚀 Step 1: Initializing authenticated app with tenant context...');
+
+                // Step 1: Initialize tenant context
+                console.log('🚀 Step 2: Creating TenantManager...');
+                const tenantManager = new TenantManager();
+
+                console.log('🚀 Step 3: Calling tenantManager.initializeTenantContext()...');
+                let tenant;
+                try {
+                    tenant = await tenantManager.initializeTenantContext();
+                    console.log(`✅ Step 4: Tenant initialized: ${tenant.name} (${tenant.tenantId})`);
+                } catch (error) {
+                    console.error('❌ Step 4: Tenant initialization failed:', error);
+                    // Continue without tenant context for now
+                    tenant = null;
+                }
+
+                // Step 2: Show loading state
+                showLoadingState(mainContent);
+
+                // Step 3: Initialize database
+                if (window.DB && typeof DB.init === 'function') {
+                    console.log('🚀 Step 5: Initializing database...');
+                    DB.init();
+                    console.log('✅ Step 6: Database initialized');
+                }
+
+                // Step 4: Show main UI
+                console.log('🚀 Step 7: Showing authenticated UI...');
+                showAuthenticatedUI(navBar, mainContent, tenant);
+
+                // Step 5: Make tenant manager globally available
+                window.tenantManager = tenantManager;
+
+                console.log('✅ Step 8: Authenticated app initialization complete');
+
+            } catch (error) {
+                console.error('❌ Failed to initialize authenticated app:', error);
+                console.error('❌ Error details:', error.stack);
+                showErrorState(mainContent, error.message);
+            }
+        }
+
+        /**
+         * Show loading state during tenant initialization
+         */
+        function showLoadingState(mainContent) {
+            mainContent.style.display = '';
+            mainContent.innerHTML = `
+                <div style="text-align: center; padding: 2rem;">
+                    <h3>🔧 Initializing Roady...</h3>
+                    <p>Setting up your workspace, please wait...</p>
+                </div>
+            `;
+        }
+
+        /**
+         * Show authenticated UI with tenant info
+         */
+        function showAuthenticatedUI(navBar, mainContent, tenant) {
+            // Render full UI
+            navBar.style.display = '';
+            mainContent.style.display = '';
+
+            // Remove sign-in overlay if present
+            const signInDiv = document.getElementById('sign-in');
+            if (signInDiv) signInDiv.remove();
+
+            // Add tenant info to navigation
+            addTenantInfoToNav(navBar, tenant);
+
+            // Try to improve user profile for future tenant creation
+            try {
+                if (window.Clerk?.user && (!window.Clerk.user.firstName || !window.Clerk.user.lastName)) {
+                    console.log('🔧 User profile incomplete - consider setting your name in Clerk settings');
+                }
+            } catch (e) {
+                console.log('🔧 Could not check user profile');
+            }
+
+            // Mount user button in header (far right)
+            let userButtonDiv = document.getElementById('user-button');
+            if (!userButtonDiv) {
+                userButtonDiv = document.createElement('div');
+                userButtonDiv.id = 'user-button';
+                userButtonDiv.style.display = 'inline-block';
+                userButtonDiv.style.float = 'right';
+                userButtonDiv.style.marginLeft = '1rem';
+                // Find the rightmost <ul> in navBar
+                const navLists = navBar.querySelectorAll('ul');
+                if (navLists.length > 1) {
+                    navLists[1].appendChild(userButtonDiv);
+                } else {
+                    navBar.appendChild(userButtonDiv);
+                }
+            }
+            Clerk.mountUserButton(userButtonDiv);
+
+            // Don't clear the main content - let Alpine handle it
+            // The main content already has the Alpine.js templates
+
+            // Initialize the app after tenant context is ready
+            initializeAlpineApp(tenant);
+        }
+
+        /**
+         * Initialize Alpine.js app after tenant context is established
+         */
+        function initializeAlpineApp(tenant) {
+            console.log('🚀 Initializing Alpine.js app with tenant:', tenant);
+
+            // Remove loading state but keep the Alpine templates
+            const mainContent = document.querySelector('main.container');
+            if (mainContent) {
+                // Find and remove only the loading elements, not the Alpine templates
+                const loadingElements = mainContent.children;
+                for (let i = loadingElements.length - 1; i >= 0; i--) {
+                    const element = loadingElements[i];
+                    if (element.textContent && element.textContent.includes('Initializing Roady')) {
+                        element.remove();
+                    }
+                }
+            }
+
+            // Store tenant globally for Alpine app to access during init
+            window.tenantFromManager = tenant;
+
+            // Wait for Alpine to be ready, then trigger app initialization
+            if (window.Alpine) {
+                console.log('✅ Alpine already loaded, initializing app...');
+                // Alpine is already loaded, need to manually trigger the app's init method
+                const appContainer = document.querySelector('body > div[x-data]');
+                if (appContainer) {
+                    // Get the Alpine data instance and call init() manually
+                    Alpine.$data(appContainer).init();
+                }
+            } else {
+                console.log('⏳ Waiting for Alpine to load...');
+                // Wait for Alpine to load
+                document.addEventListener('alpine:initialized', () => {
+                    console.log('✅ Alpine loaded, initializing app...');
+                    const appContainer = document.querySelector('body > div[x-data]');
+                    if (appContainer) {
+                        Alpine.$data(appContainer).init();
+                    }
+                });
+            }
+        }
+
+        /**
+         * Add tenant information to navigation
+         */
+        function addTenantInfoToNav(navBar, tenant) {
+            // Add tenant info before the user button
+            const tenantInfo = document.createElement('div');
+            tenantInfo.style.display = 'inline-block';
+            tenantInfo.style.marginRight = '1rem';
+            tenantInfo.style.padding = '0.5rem';
+            tenantInfo.style.background = 'var(--pico-primary, #5a67d8)';
+            tenantInfo.style.color = 'white';
+            tenantInfo.style.borderRadius = '4px';
+            // Improve tenant name display
+            let displayName = tenant.name;
+            if (tenant.personal && displayName.includes('for None')) {
+                // Try to get user email for a better name
+                try {
+                    const userEmail = window.Clerk?.user?.primaryEmailAddress?.emailAddress;
+                    if (userEmail) {
+                        const username = userEmail.split('@')[0];
+                        displayName = `${username}'s Workspace`;
+                    } else {
+                        displayName = 'Personal Workspace';
+                    }
+                } catch (e) {
+                    displayName = 'Personal Workspace';
+                }
+            }
+            tenantInfo.innerHTML = `
+                <span style="font-weight: bold;">${displayName}</span>
+                ${tenant.personal ? '<small>(Personal)</small>' : ''}
+            `;
+
+            // Add tenant info to the rightmost <ul> in nav (before user button)
+            const navLists = navBar.querySelectorAll('ul');
+            if (navLists.length > 1) {
+                // Add to the rightmost ul as a new list item
+                const tenantLi = document.createElement('li');
+                tenantLi.style.marginRight = '1rem';
+                tenantLi.innerHTML = tenantInfo.innerHTML;
+                navLists[1].appendChild(tenantLi);
+            } else {
+                // Fallback: add tenant info before user button
+                const userButton = document.getElementById('user-button');
+                if (userButton) {
+                    userButton.parentNode.insertBefore(tenantInfo, userButton);
+                } else {
+                    navBar.appendChild(tenantInfo);
+                }
+            }
+        }
+
+        /**
+         * Show error state
+         */
+        function showErrorState(mainContent, errorMessage) {
+            mainContent.style.display = '';
+            mainContent.innerHTML = `
+                <div style="text-align: center; padding: 2rem; color: #e53e3e;">
+                    <h3>❌ Initialization Failed</h3>
+                    <p>${errorMessage}</p>
+                    <button onclick="location.reload()" style="margin-top: 1rem;">Try Again</button>
+                </div>
+            `;
+        }
+
+        window.addEventListener('load', async function () {
+            await Clerk.load();
+
+            const appContainer = document.querySelector('body > div[x-data]');
+            const navBar = document.querySelector('nav.container-fluid');
+            const mainContent = document.querySelector('main.container');
+
+            if (!appContainer || !navBar || !mainContent) return;
+
+            if (Clerk.isSignedIn) {
+                console.log('🔍 Clerk.isSignedIn is true - calling initializeAuthenticatedApp');
+                // CRITICAL: Initialize tenant context before showing UI
+                initializeAuthenticatedApp(navBar, mainContent);
+            } else {
+                console.log('🔍 Clerk.isSignedIn is false - showing sign-in');
+                // Render only header bar with 'Roady', remove rest
+                navBar.style.display = '';
+                mainContent.style.display = 'none';
+                // Remove all children from mainContent
+                while (mainContent.firstChild) {
+                    mainContent.removeChild(mainContent.firstChild);
+                }
+                // Optionally, mount Clerk sign-in UI as overlay
+                if (!document.getElementById('sign-in')) {
+                    const signInDiv = document.createElement('div');
+                    signInDiv.id = 'sign-in';
+                    signInDiv.style.position = 'fixed';
+                    signInDiv.style.top = '0';
+                    signInDiv.style.left = '0';
+                    signInDiv.style.width = '100vw';
+                    signInDiv.style.height = '100vh';
+                    signInDiv.style.background = 'var(--pico-background-color, #222)';
+                    signInDiv.style.zIndex = '1000';
+                    signInDiv.style.display = 'flex';
+                    signInDiv.style.alignItems = 'center';
+                    signInDiv.style.justifyContent = 'center';
+                    document.body.appendChild(signInDiv);
+                    Clerk.mountSignIn(signInDiv);
+                }
+            }
+        });
+    </script>
 
     <!-- Service Worker Registration -->
     <script>
@@ -41,65 +321,56 @@
         }
     </script>
 </head>
+
 <body>
     <div x-data="roady" x-cloak>
-        <!-- Tenant Selection Dialog -->
-        <dialog :open="showTenantSelection" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; margin: 0; padding: 0; border-radius: 0; background: var(--pico-background-color);">
-            <article style="display: flex; flex-direction: column; height: 100vh; justify-content: center; align-items: center; padding: 2rem;">
-                <div style="max-width: 400px; width: 100%;">
-                    <hgroup>
-                        <h2>Welcome to Roady</h2>
-                        <p>Equipment checklist for band roadies</p>
-                    </hgroup>
-
-                    <label>
-                        Band Name
-                        <input
-                            type="text"
-                            x-model="tenantIdInput"
-                            placeholder="e.g., 'demo', 'my-band'"
-                            @keyup.enter="selectTenant()"
-                            autofocus
-                        />
-                        <small>Each band has separate equipment and gig data</small>
-                    </label>
-
-                    <button @click="selectTenant()" style="width: 100%;">Get Started</button>
-                </div>
-            </article>
-        </dialog>
-
-        <nav class="container-fluid" x-show="!showTenantSelection">
+        <nav class="container-fluid">
             <ul>
                 <li><strong>Roady</strong></li>
             </ul>
             <ul>
-                <li><a href="#" @click.prevent="currentView = 'gigs'" :class="{ active: currentView === 'gigs' }">My Gigs</a></li>
-                <li><a href="#" @click.prevent="currentView = 'settings'" :class="{ active: currentView === 'settings' }">Settings</a></li>
-                <li x-show="options.couchDbUrl" style="opacity: 0.7; font-size: 0.85em;" x-text="getSyncStatusText()"></li>
+                <li><a href="#" @click.prevent="currentView = 'gigs'"
+                        :class="{ active: currentView === 'gigs' }">Gigs</a></li>
+                <li><a href="#" @click.prevent="currentView = 'settings'"
+                        :class="{ active: currentView === 'settings' }">Settings</a></li>
+                <li x-show="options.couchDbUrl" style="opacity: 0.7; font-size: 0.85em;" x-text="getSyncStatusText()">
+                </li>
             </ul>
         </nav>
 
-        <main class="container" x-show="!showTenantSelection">
+        <main class="container">
+            <!-- Debug Info -->
+            <div style="background: #f0f0f0; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+                <strong>Debug Info:</strong><br>
+                currentView: <span x-text="currentView"></span><br>
+                isLoading: <span x-text="isLoading"></span><br>
+                gigs.length: <span x-text="gigs ? gigs.length : 'null'"></span><br>
+                equipment.length: <span x-text="equipment ? equipment.length : 'null'"></span><br>
+                gigTypes.length: <span x-text="gigTypes ? gigTypes.length : 'null'"></span>
+            </div>
+
             <!-- Gigs View (Primary) -->
             <div x-show="currentView === 'gigs'">
                 <hgroup>
-                    <h2>My Gigs</h2>
-                    <p>Schedule and manage your gigs</p>
+                    <h2 x-text="isLoading ? 'Loading...' : 'Gigs'"></h2>
+                    <p x-show="!isLoading">Schedule and manage your gigs</p>
                 </hgroup>
                 <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem;">
                     <button @click="openCreateGigDialog()">+ Create Gig</button>
-                    <button @click="showPastGigs = !showPastGigs" class="secondary outline" x-text="showPastGigs ? 'Hide Past Gigs' : 'Show Past Gigs'"></button>
+                    <button @click="showPastGigs = !showPastGigs" class="secondary outline"
+                        x-text="showPastGigs ? 'Hide Past Gigs' : 'Show Past Gigs'"></button>
                 </div>
 
                 <dialog :open="showAddGig || editingGig">
                     <article style="display: flex; flex-direction: column; height: 100%;">
                         <header style="display: flex; align-items: center; gap: 1rem;">
-                            <a href="#" @click.prevent="cancelGigEdit()" style="font-size: 1.5rem; text-decoration: none;">←</a>
+                            <a href="#" @click.prevent="cancelGigEdit()"
+                                style="font-size: 1.5rem; text-decoration: none;">←</a>
                             <h3 style="margin: 0;" x-text="editingGig ? 'Edit Gig' : 'Create Gig'"></h3>
                         </header>
                         <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
-                            <input type="text" x-model="newGig.name" placeholder="Venue or gig name (e.g., 'Blue Note Jazz Club')" />
+                            <input type="text" x-model="newGig.name"
+                                placeholder="Venue or gig name (e.g., 'Blue Note Jazz Club')" />
                             <input type="date" x-model="newGig.date" />
                             <select x-model="newGig.gigTypeId" :disabled="editingGig && isGigInPast(editingGig)">
                                 <option value="">Select template...</option>
@@ -123,16 +394,21 @@
                                 Map Link (optional)
                                 <input type="url" x-model="newGig.mapLink" placeholder="https://maps.google.com/..." />
                             </label>
-                            <p x-show="editingGig && isGigInPast(editingGig)" class="text-muted" style="font-size: 0.9rem;">
+                            <p x-show="editingGig && isGigInPast(editingGig)" class="text-muted"
+                                style="font-size: 0.9rem;">
                                 Note: Changing template for past gigs is not supported.
                             </p>
-                            <p x-show="editingGig && !isGigInPast(editingGig) && gigHasChecklistProgress(editingGig)" class="text-muted" style="font-size: 0.9rem; color: var(--pico-del-color, #c62828);">
+                            <p x-show="editingGig && !isGigInPast(editingGig) && gigHasChecklistProgress(editingGig)"
+                                class="text-muted" style="font-size: 0.9rem; color: var(--pico-del-color, #c62828);">
                                 ⚠ Warning: Changing template will reset your checklist progress.
                             </p>
                         </div>
-                        <footer style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
-                            <button x-show="editingGig" @click="confirmDeleteGig()" class="secondary outline" style="background: var(--pico-del-color, #c0392b); color: white; margin: 0; flex: 0;">Delete</button>
-                            <button @click="saveGig()" x-text="editingGig ? 'Save' : 'Create'" style="margin: 0; margin-left: auto;"></button>
+                        <footer
+                            style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                            <button x-show="editingGig" @click="confirmDeleteGig()" class="secondary outline"
+                                style="background: var(--pico-del-color, #c0392b); color: white; margin: 0;">Delete</button>
+                            <button @click="saveGig()" x-text="editingGig ? 'Save' : 'Create'"
+                                style="margin: 0;"></button>
                         </footer>
                     </article>
                 </dialog>
@@ -143,9 +419,11 @@
                             <div style="flex: 1;">
                                 <strong x-text="gig.name || 'Unnamed Gig'"></strong>
                                 <p class="text-muted">
-                                    <span x-text="formatDate(gig.date)"></span> • <span x-text="getGigTypeName(gig.gigTypeId)"></span>
+                                    <span x-text="formatDate(gig.date)"></span> • <span
+                                        x-text="getGigTypeName(gig.gigTypeId)"></span>
                                 </p>
-                                <p x-show="gig.arrivalTime || gig.doorsOpenTime" class="text-muted" style="font-size: 0.85rem; margin-top: 0.25rem;">
+                                <p x-show="gig.arrivalTime || gig.doorsOpenTime" class="text-muted"
+                                    style="font-size: 0.85rem; margin-top: 0.25rem;">
                                     <span x-show="gig.arrivalTime">⏰ <span x-text="gig.arrivalTime"></span></span>
                                     <span x-show="gig.arrivalTime && gig.doorsOpenTime"> • </span>
                                     <span x-show="gig.doorsOpenTime">🚪 <span x-text="gig.doorsOpenTime"></span></span>
@@ -156,13 +434,15 @@
                                 </small>
                             </div>
                             <div class="button-group">
-                                <button @click="viewGigDetail(gig._id, 'leavingForGig')" class="contrast">To Gig</button>
+                                <button @click="viewGigDetail(gig._id, 'leavingForGig')" class="contrast">To
+                                    Gig</button>
                                 <button @click="viewGigDetail(gig._id, 'leavingFromGig')">From Gig</button>
                                 <button @click="editGig(gig)" class="secondary outline">Edit</button>
                             </div>
                         </article>
                     </template>
-                    <p x-show="getFilteredGigs().length === 0 && !showPastGigs" class="empty-state">No upcoming gigs. Create your first gig!</p>
+                    <p x-show="getFilteredGigs().length === 0 && !showPastGigs" class="empty-state">No upcoming gigs.
+                        Create your first gig!</p>
                     <p x-show="getFilteredGigs().length === 0 && showPastGigs" class="empty-state">No gigs found.</p>
                 </div>
 
@@ -170,15 +450,22 @@
                 <dialog :open="selectedGigId && gigChecklistMode === 'leavingForGig'">
                     <article style="display: flex; flex-direction: column; height: 100%;">
                         <header style="display: flex; align-items: center; gap: 1rem;">
-                            <a href="#" @click.prevent="closeGigDetail()" style="font-size: 1.5rem; text-decoration: none;">←</a>
+                            <a href="#" @click.prevent="closeGigDetail()"
+                                style="font-size: 1.5rem; text-decoration: none;">←</a>
                             <div style="flex: 1;">
-                                <h3 style="margin: 0;" x-text="selectedGig ? (selectedGig.name || 'Unnamed Gig') : ''"></h3>
-                                <p class="text-muted" x-text="selectedGig ? formatDate(selectedGig.date) + ' • ' + getGigTypeName(selectedGig.gigTypeId) : ''"></p>
-                                <div x-show="selectedGig && (selectedGig.arrivalTime || selectedGig.doorsOpenTime)" style="margin-top: 0.5rem;">
-                                    <p x-show="selectedGig && selectedGig.arrivalTime" class="text-muted" style="margin: 0;">
+                                <h3 style="margin: 0;" x-text="selectedGig ? (selectedGig.name || 'Unnamed Gig') : ''">
+                                </h3>
+                                <p class="text-muted"
+                                    x-text="selectedGig ? formatDate(selectedGig.date) + ' • ' + getGigTypeName(selectedGig.gigTypeId) : ''">
+                                </p>
+                                <div x-show="selectedGig && (selectedGig.arrivalTime || selectedGig.doorsOpenTime)"
+                                    style="margin-top: 0.5rem;">
+                                    <p x-show="selectedGig && selectedGig.arrivalTime" class="text-muted"
+                                        style="margin: 0;">
                                         ⏰ Arrival: <span x-text="selectedGig.arrivalTime"></span>
                                     </p>
-                                    <p x-show="selectedGig && selectedGig.doorsOpenTime" class="text-muted" style="margin: 0;">
+                                    <p x-show="selectedGig && selectedGig.doorsOpenTime" class="text-muted"
+                                        style="margin: 0;">
                                         🚪 Doors: <span x-text="selectedGig.doorsOpenTime"></span>
                                     </p>
                                 </div>
@@ -199,11 +486,13 @@
                                     <!-- Progress bar -->
                                     <div class="checklist-progress">
                                         <div class="progress-text">
-                                            <span x-text="getChecklistProgress(selectedGig.loadoutChecklist)"></span> loaded
+                                            <span x-text="getChecklistProgress(selectedGig.loadoutChecklist)"></span>
+                                            loaded
                                         </div>
                                         <div class="progress-bar">
                                             <div class="progress-bar-fill"
-                                                 :style="`width: ${(selectedGig.loadoutChecklist.filter(i => i.checked).length / selectedGig.loadoutChecklist.length * 100).toFixed(0)}%`"></div>
+                                                :style="`width: ${(selectedGig.loadoutChecklist.filter(i => i.checked).length / selectedGig.loadoutChecklist.length * 100).toFixed(0)}%`">
+                                            </div>
                                         </div>
                                     </div>
 
@@ -211,10 +500,13 @@
                                     <div class="checklist-section-missing">
                                         <template x-for="(item, index) in selectedGig.loadoutChecklist" :key="index">
                                             <div x-show="!item.checked">
-                                                <div class="checklist-item-missing" @click="toggleChecklistItem('loadout', index)">
+                                                <div class="checklist-item-missing"
+                                                    @click="toggleChecklistItem('loadout', index)">
                                                     <div class="item-icon">⬜</div>
                                                     <div class="item-content">
-                                                        <div class="item-name" x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
+                                                        <div class="item-name"
+                                                            x-text="getEquipmentName(item.equipmentId, item.itemNumber)">
+                                                        </div>
                                                         <div class="item-action">Tap to mark as loaded</div>
                                                     </div>
                                                 </div>
@@ -224,16 +516,21 @@
 
                                     <!-- Loaded items section (collapsible) -->
                                     <div class="checklist-section-loaded">
-                                        <h5 class="section-heading-loaded" @click="showLoadedItems = !showLoadedItems" style="cursor: pointer;">
+                                        <h5 class="section-heading-loaded" @click="showLoadedItems = !showLoadedItems"
+                                            style="cursor: pointer;">
                                             ✓ LOADED
                                             <span x-text="showLoadedItems ? '▼' : '▶'"></span>
                                         </h5>
                                         <div x-show="showLoadedItems" class="checklist">
-                                            <template x-for="(item, index) in selectedGig.loadoutChecklist" :key="index">
+                                            <template x-for="(item, index) in selectedGig.loadoutChecklist"
+                                                :key="index">
                                                 <div x-show="item.checked">
-                                                    <div class="checklist-item-loaded" @click="toggleChecklistItem('loadout', index)">
+                                                    <div class="checklist-item-loaded"
+                                                        @click="toggleChecklistItem('loadout', index)">
                                                         <div class="item-icon">✓</div>
-                                                        <div class="item-name" x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
+                                                        <div class="item-name"
+                                                            x-text="getEquipmentName(item.equipmentId, item.itemNumber)">
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </template>
@@ -243,7 +540,8 @@
                             </template>
 
                             <div class="add-item-section">
-                                <button @click="showAddItemToGig = true" class="secondary outline" style="width: 100%;">+ Add Item to This Gig</button>
+                                <button @click="showAddItemToGig = true" class="secondary outline"
+                                    style="width: 100%;">+ Add Item to This Gig</button>
                             </div>
 
                             <!-- Add item to gig modal -->
@@ -257,7 +555,8 @@
                                         </template>
                                     </select>
                                     <p style="text-align: center; margin: 0.5rem 0;">- OR -</p>
-                                    <input type="text" x-model="newItemForGig.newEquipmentName" placeholder="Or type new item name to create it..." />
+                                    <input type="text" x-model="newItemForGig.newEquipmentName"
+                                        placeholder="Or type new item name to create it..." />
                                     <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
                                         <button @click="addItemToGig()">Add</button>
                                         <button @click="cancelAddItemToGig()" class="secondary">Cancel</button>
@@ -269,10 +568,13 @@
                             <div x-show="showAddToGigTypeConfirm" class="inline-modal">
                                 <div class="inline-modal-content">
                                     <h5>Add to Template?</h5>
-                                    <p x-text="`Do you want to add &quot;${newItemForGig.addedEquipmentName || ''}&quot; to the &quot;${selectedGig ? getGigTypeName(selectedGig.gigTypeId) : ''}&quot; template for all future gigs?`"></p>
+                                    <p
+                                        x-text="`Do you want to add &quot;${newItemForGig.addedEquipmentName || ''}&quot; to the &quot;${selectedGig ? getGigTypeName(selectedGig.gigTypeId) : ''}&quot; template for all future gigs?`">
+                                    </p>
                                     <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
                                         <button @click="confirmAddToGigType(true)">Yes, Add to Template</button>
-                                        <button @click="confirmAddToGigType(false)" class="secondary">No, Only This Gig</button>
+                                        <button @click="confirmAddToGigType(false)" class="secondary">No, Only This
+                                            Gig</button>
                                     </div>
                                 </div>
                             </div>
@@ -288,15 +590,22 @@
                 <dialog :open="selectedGigId && gigChecklistMode === 'leavingFromGig'">
                     <article style="display: flex; flex-direction: column; height: 100%;">
                         <header style="display: flex; align-items: center; gap: 1rem;">
-                            <a href="#" @click.prevent="closeGigDetail()" style="font-size: 1.5rem; text-decoration: none;">←</a>
+                            <a href="#" @click.prevent="closeGigDetail()"
+                                style="font-size: 1.5rem; text-decoration: none;">←</a>
                             <div style="flex: 1;">
-                                <h3 style="margin: 0;" x-text="selectedGig ? (selectedGig.name || 'Unnamed Gig') : ''"></h3>
-                                <p class="text-muted" x-text="selectedGig ? formatDate(selectedGig.date) + ' • ' + getGigTypeName(selectedGig.gigTypeId) : ''"></p>
-                                <div x-show="selectedGig && (selectedGig.arrivalTime || selectedGig.doorsOpenTime)" style="margin-top: 0.5rem;">
-                                    <p x-show="selectedGig && selectedGig.arrivalTime" class="text-muted" style="margin: 0;">
+                                <h3 style="margin: 0;" x-text="selectedGig ? (selectedGig.name || 'Unnamed Gig') : ''">
+                                </h3>
+                                <p class="text-muted"
+                                    x-text="selectedGig ? formatDate(selectedGig.date) + ' • ' + getGigTypeName(selectedGig.gigTypeId) : ''">
+                                </p>
+                                <div x-show="selectedGig && (selectedGig.arrivalTime || selectedGig.doorsOpenTime)"
+                                    style="margin-top: 0.5rem;">
+                                    <p x-show="selectedGig && selectedGig.arrivalTime" class="text-muted"
+                                        style="margin: 0;">
                                         ⏰ Arrival: <span x-text="selectedGig.arrivalTime"></span>
                                     </p>
-                                    <p x-show="selectedGig && selectedGig.doorsOpenTime" class="text-muted" style="margin: 0;">
+                                    <p x-show="selectedGig && selectedGig.doorsOpenTime" class="text-muted"
+                                        style="margin: 0;">
                                         🚪 Doors: <span x-text="selectedGig.doorsOpenTime"></span>
                                     </p>
                                 </div>
@@ -317,11 +626,13 @@
                                     <!-- Progress bar -->
                                     <div class="checklist-progress">
                                         <div class="progress-text">
-                                            <span x-text="getChecklistProgress(selectedGig.loadinChecklist)"></span> packed
+                                            <span x-text="getChecklistProgress(selectedGig.loadinChecklist)"></span>
+                                            packed
                                         </div>
                                         <div class="progress-bar">
                                             <div class="progress-bar-fill"
-                                                 :style="`width: ${(selectedGig.loadinChecklist.filter(i => i.checked).length / selectedGig.loadinChecklist.length * 100).toFixed(0)}%`"></div>
+                                                :style="`width: ${(selectedGig.loadinChecklist.filter(i => i.checked).length / selectedGig.loadinChecklist.length * 100).toFixed(0)}%`">
+                                            </div>
                                         </div>
                                     </div>
 
@@ -332,7 +643,9 @@
                                                 <div class="checklist-item-missing" @click="toggleLoadinItem(index)">
                                                     <div class="item-icon">⬜</div>
                                                     <div class="item-content">
-                                                        <div class="item-name" x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
+                                                        <div class="item-name"
+                                                            x-text="getEquipmentName(item.equipmentId, item.itemNumber)">
+                                                        </div>
                                                         <div class="item-action">Tap to mark as packed</div>
                                                     </div>
                                                 </div>
@@ -342,7 +655,8 @@
 
                                     <!-- Packed items section (collapsible) -->
                                     <div class="checklist-section-loaded">
-                                        <h5 class="section-heading-loaded" @click="showPackedItems = !showPackedItems" style="cursor: pointer;">
+                                        <h5 class="section-heading-loaded" @click="showPackedItems = !showPackedItems"
+                                            style="cursor: pointer;">
                                             ✓ PACKED
                                             <span x-text="showPackedItems ? '▼' : '▶'"></span>
                                         </h5>
@@ -351,7 +665,9 @@
                                                 <div x-show="item.checked">
                                                     <div class="checklist-item-loaded" @click="toggleLoadinItem(index)">
                                                         <div class="item-icon">✓</div>
-                                                        <div class="item-name" x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
+                                                        <div class="item-name"
+                                                            x-text="getEquipmentName(item.equipmentId, item.itemNumber)">
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </template>
@@ -385,6 +701,10 @@
                     <button @click="settingsTab = 'options'" :class="settingsTab === 'options' ? '' : 'outline'">
                         Options
                     </button>
+                    <button @click="settingsTab = 'trash'; loadDeletedItems()"
+                        :class="settingsTab === 'trash' ? '' : 'outline'">
+                        🗑️ Trash
+                    </button>
                 </div>
 
                 <!-- Equipment Section -->
@@ -394,35 +714,44 @@
                         <button @click="showAddEquipment = true">+ Add Item</button>
                     </div>
 
-                <dialog :open="showAddEquipment || editingEquipment">
-                    <article style="display: flex; flex-direction: column; height: 100%;">
-                        <header style="display: flex; align-items: center; gap: 1rem;">
-                            <a href="#" @click.prevent="cancelEquipmentEdit()" style="font-size: 1.5rem; text-decoration: none;">←</a>
-                            <h3 style="margin: 0;" x-text="editingEquipment ? 'Edit Equipment Item' : 'Add Equipment Item'"></h3>
-                        </header>
-                        <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
-                            <input type="text" x-model="newEquipment.name" placeholder="Item name (e.g., 'Shure SM58 Mic')" />
-                            <textarea x-model="newEquipment.description" placeholder="Description or notes (optional)"></textarea>
-                        </div>
-                        <footer style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
-                            <button x-show="editingEquipment" @click="deleteEquipment(editingEquipment._id); cancelEquipmentEdit()" class="secondary outline" style="background: var(--pico-del-color, #c0392b); color: white; margin: 0; flex: 0;">Delete</button>
-                            <button @click="saveEquipment()" style="margin: 0; margin-left: auto;">Save</button>
-                        </footer>
-                    </article>
-                </dialog>
-
-                <div class="equipment-list">
-                    <template x-for="item in equipment" :key="item._id">
-                        <article class="equipment-item">
-                            <div>
-                                <strong x-text="item.name"></strong>
-                                <p x-text="item.description" class="text-muted"></p>
+                    <dialog :open="showAddEquipment || editingEquipment">
+                        <article style="display: flex; flex-direction: column; height: 100%;">
+                            <header style="display: flex; align-items: center; gap: 1rem;">
+                                <a href="#" @click.prevent="cancelEquipmentEdit()"
+                                    style="font-size: 1.5rem; text-decoration: none;">←</a>
+                                <h3 style="margin: 0;"
+                                    x-text="editingEquipment ? 'Edit Equipment Item' : 'Add Equipment Item'"></h3>
+                            </header>
+                            <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                                <input type="text" x-model="newEquipment.name"
+                                    placeholder="Item name (e.g., 'Shure SM58 Mic')" />
+                                <textarea x-model="newEquipment.description"
+                                    placeholder="Description or notes (optional)"></textarea>
                             </div>
-                            <button @click="editEquipment(item)" class="contrast">Edit</button>
+                            <footer
+                                style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                                <button x-show="editingEquipment"
+                                    @click="deleteEquipment(editingEquipment._id); cancelEquipmentEdit()"
+                                    class="secondary outline"
+                                    style="background: var(--pico-del-color, #c0392b); color: white; margin: 0;">Delete</button>
+                                <button @click="saveEquipment()" style="margin: 0;">Save</button>
+                            </footer>
                         </article>
-                    </template>
-                    <p x-show="equipment.length === 0" class="empty-state">No equipment yet. Add your first item!</p>
-                </div>
+                    </dialog>
+
+                    <div class="equipment-list">
+                        <template x-for="item in equipment" :key="item._id">
+                            <article class="equipment-item">
+                                <div>
+                                    <strong x-text="item.name"></strong>
+                                    <p x-text="item.description" class="text-muted"></p>
+                                </div>
+                                <button @click="editEquipment(item)" class="contrast">Edit</button>
+                            </article>
+                        </template>
+                        <p x-show="equipment.length === 0" class="empty-state">No equipment yet. Add your first item!
+                        </p>
+                    </div>
                 </section>
 
                 <!-- Templates Section -->
@@ -432,82 +761,77 @@
                         <button @click="showAddGigType = true">+ Add Template</button>
                     </div>
 
-                <dialog :open="showAddGigType || editingGigType">
-                    <article style="display: flex; flex-direction: column; height: 100%;">
-                        <header style="display: flex; align-items: center; gap: 1rem;">
-                            <a href="#" @click.prevent="cancelGigTypeEdit()" style="font-size: 1.5rem; text-decoration: none;">←</a>
-                            <h3 style="margin: 0;" x-text="editingGigType ? 'Edit Template' : 'Add Template'"></h3>
-                        </header>
-                        <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
-                            <input type="text" x-model="newGigType.name" placeholder="Template name (e.g., 'Small Venue', 'Festival')" />
-                            <fieldset class="equipment-selector">
-                                <legend>Select Equipment for This Template</legend>
-                                <template x-for="item in equipment" :key="item._id">
-                                    <div class="equipment-quantity-row">
-                                        <label style="flex: 1; margin: 0;">
-                                            <input type="checkbox"
-                                                   :checked="newGigType.equipment.some(e => e.equipmentId === item._id)"
-                                                   @change="toggleEquipmentInTemplate(item._id)" />
-                                            <span x-text="item.name"></span>
-                                        </label>
-                                        <div x-show="newGigType.equipment.some(e => e.equipmentId === item._id)" style="display: flex; align-items: center; gap: 0.5rem;">
-                                            <label style="margin: 0; font-size: 0.9rem;">Qty:</label>
-                                            <input type="number"
-                                                   min="1"
-                                                   max="99"
-                                                   style="width: 60px; padding: 0.25rem 0.5rem;"
-                                                   :value="(newGigType.equipment.find(e => e.equipmentId === item._id) || {}).quantity || 1"
-                                                   @input="updateEquipmentQuantity(item._id, $event.target.value)" />
+                    <dialog :open="showAddGigType || editingGigType">
+                        <article style="display: flex; flex-direction: column; height: 100%;">
+                            <header style="display: flex; align-items: center; gap: 1rem;">
+                                <a href="#" @click.prevent="cancelGigTypeEdit()"
+                                    style="font-size: 1.5rem; text-decoration: none;">←</a>
+                                <h3 style="margin: 0;" x-text="editingGigType ? 'Edit Template' : 'Add Template'"></h3>
+                            </header>
+                            <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                                <input type="text" x-model="newGigType.name"
+                                    placeholder="Template name (e.g., 'Small Venue', 'Festival')" />
+                                <fieldset class="equipment-selector">
+                                    <legend>Select Equipment for This Template</legend>
+                                    <template x-for="item in equipment" :key="item._id">
+                                        <div class="equipment-quantity-row">
+                                            <label style="flex: 1; margin: 0;">
+                                                <input type="checkbox"
+                                                    :checked="newGigType.equipment.some(e => e.equipmentId === item._id)"
+                                                    @change="toggleEquipmentInTemplate(item._id)" />
+                                                <span x-text="item.name"></span>
+                                            </label>
+                                            <div x-show="newGigType.equipment.some(e => e.equipmentId === item._id)"
+                                                style="display: flex; align-items: center; gap: 0.5rem;">
+                                                <label style="margin: 0; font-size: 0.9rem;">Qty:</label>
+                                                <input type="number" min="1" max="99"
+                                                    style="width: 60px; padding: 0.25rem 0.5rem;"
+                                                    :value="(newGigType.equipment.find(e => e.equipmentId === item._id) || {}).quantity || 1"
+                                                    @input="updateEquipmentQuantity(item._id, $event.target.value)" />
+                                            </div>
                                         </div>
-                                    </div>
-                                </template>
-                            </fieldset>
-                        </div>
-                        <footer style="display: flex; justify-content: flex-end;">
-                            <button @click="saveGigType" style="margin: 0;">Save</button>
-                        </footer>
-                    </article>
-                </dialog>
-
-                <div class="gigtype-list">
-                    <template x-for="type in gigTypes" :key="type._id">
-                        <article class="gigtype-item">
-                            <div>
-                                <strong x-text="type.name"></strong>
-                                <p x-text="getEquipmentCount(type) + ' items'" class="text-muted"></p>
+                                    </template>
+                                </fieldset>
                             </div>
-                            <div class="button-group">
-                                <button @click="editGigType(type)" class="contrast">Edit</button>
-                                <button @click="deleteGigType(type._id)" class="secondary outline">Delete</button>
-                            </div>
+                            <footer
+                                style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                                <button x-show="editingGigType" @click="deleteGigType(editingGigType._id)"
+                                    class="secondary outline"
+                                    style="background: var(--pico-del-color, #c0392b); color: white; margin: 0;">Delete</button>
+                                <button @click="saveGigType" style="margin: 0;">Save</button>
+                            </footer>
                         </article>
-                    </template>
-                    <p x-show="gigTypes.length === 0" class="empty-state">No templates yet. Create your first template!</p>
-                </div>
+                    </dialog>
+
+                    <div class="gigtype-list">
+                        <template x-for="type in gigTypes" :key="type._id">
+                            <article class="gigtype-item">
+                                <div>
+                                    <strong x-text="type.name"></strong>
+                                    <p x-text="getEquipmentCount(type) + ' items'" class="text-muted"></p>
+                                </div>
+                                <div class="button-group">
+                                    <button @click="editGigType(type)" class="contrast">Edit</button>
+                                </div>
+                            </article>
+                        </template>
+                        <p x-show="gigTypes.length === 0" class="empty-state">No templates yet. Create your first
+                            template!</p>
+                    </div>
                 </section>
 
                 <!-- Options Section -->
                 <section x-show="settingsTab === 'options'">
                     <h3>Application Options</h3>
 
-                    <div style="margin-top: 2rem;">
-                        <h4>Band Name</h4>
-                        <div style="display: flex; align-items: center; gap: 1rem; padding: 1rem; background: var(--pico-form-element-background-color); border-radius: var(--pico-border-radius);">
-                            <div style="flex: 1;">
-                                <strong><span x-text="options.tenantId || 'demo'"></span></strong>
-                            </div>
-                            <button @click="switchBand()" class="secondary outline" style="margin: 0; flex-shrink: 0;">Switch Band</button>
-                        </div>
-                    </div>
+                    <!-- Tenant info is now displayed in the navigation bar via MyCouch integration -->
 
                     <div style="margin-top: 2rem;">
                         <h4>Sync Settings</h4>
                         <label>
                             CouchDB URL
-                            <input type="url"
-                                   x-model="options.couchDbUrl"
-                                   @change="saveOptions()"
-                                   placeholder="https://username:password@your-couchdb-server.com" />
+                            <input type="url" x-model="options.couchDbUrl" @change="saveOptions()"
+                                placeholder="https://username:password@your-couchdb-server.com" />
                             <small class="text-muted">
                                 Optional: URL for CouchDB server with embedded credentials for data synchronization.
                                 Format: <code>https://username:password@server.com</code><br>
@@ -516,26 +840,32 @@
                         </label>
 
                         <div x-show="options.couchDbUrl" style="margin-top: 1rem;">
-                            <div style="display: flex; align-items: center; gap: 1rem; padding: 1rem; background: var(--pico-form-element-background-color); border-radius: var(--pico-border-radius);">
+                            <div
+                                style="display: flex; align-items: center; gap: 1rem; padding: 1rem; background: var(--pico-form-element-background-color); border-radius: var(--pico-border-radius);">
                                 <div style="flex: 1;">
                                     <strong>Sync Status:</strong> <span x-text="getSyncStatusText()"></span>
                                 </div>
-                                <button @click="disableSync()" class="secondary outline" style="margin: 0;">Disconnect</button>
+                                <button @click="disableSync()" class="secondary outline"
+                                    style="margin: 0;">Disconnect</button>
                             </div>
 
-                            <div x-show="syncError" style="margin-top: 1rem; padding: 1rem; background: var(--pico-del-background-color, #ffebee); color: var(--pico-del-color, #c62828); border-radius: var(--pico-border-radius);">
+                            <div x-show="syncError"
+                                style="margin-top: 1rem; padding: 1rem; background: var(--pico-del-background-color, #ffebee); color: var(--pico-del-color, #c62828); border-radius: var(--pico-border-radius);">
                                 <strong>⚠ Error:</strong> <span x-text="syncError"></span>
                             </div>
 
                             <p class="text-muted" style="margin-top: 1rem; font-size: 0.9rem;">
-                                <strong>Note:</strong> Sync is bidirectional and continuous. Changes made on this device will sync to the server, and changes from other devices will sync here automatically.
+                                <strong>Note:</strong> Sync is bidirectional and continuous. Changes made on this device
+                                will sync to the server, and changes from other devices will sync here automatically.
                             </p>
                             <details style="margin-top: 1rem;">
-                                <summary style="cursor: pointer; font-weight: bold;">Setup Instructions for CouchDB</summary>
+                                <summary style="cursor: pointer; font-weight: bold;">Setup Instructions for CouchDB
+                                </summary>
                                 <ol style="margin-top: 0.5rem; font-size: 0.9rem;">
                                     <li>Create a database named <code>roady</code> on your CouchDB server</li>
                                     <li>Enable CORS on your CouchDB server to allow your domain</li>
-                                    <li>Include credentials in the URL: <code>https://username:password@your-server.com</code></li>
+                                    <li>Include credentials in the URL:
+                                        <code>https://username:password@your-server.com</code></li>
                                     <li>Save the URL in the field above to start syncing</li>
                                 </ol>
                             </details>
@@ -547,8 +877,155 @@
                         <p class="text-muted">Data export/import features coming soon.</p>
                     </div>
                 </section>
+
+                <!-- Trash Section -->
+                <section x-show="settingsTab === 'trash'">
+                    <h3>Trash</h3>
+                    <p class="text-muted">Deleted items are kept for 30 days. You can restore them anytime.</p>
+
+                    <!-- Gigs Trash -->
+                    <div x-show="deletedItems.gigs && deletedItems.gigs.length > 0" style="margin-top: 2rem;">
+                        <h4>Deleted Gigs</h4>
+                        <div class="equipment-list">
+                            <template x-for="gig in getDeletedItemsPage('gigs', trashCurrentPage.gigs)" :key="gig._id">
+                                <article class="equipment-item">
+                                    <div>
+                                        <strong x-text="gig.name"></strong>
+                                        <p class="text-muted" style="margin: 0.25rem 0;">
+                                            <span x-text="formatDate(gig.date)"></span> •
+                                            <span
+                                                x-text="'Deleted ' + (new Date(gig.deletedAt).toLocaleDateString())"></span>
+                                        </p>
+                                    </div>
+                                    <button @click="restoreDeletedItem('gigs', gig._id)"
+                                        class="contrast">Restore</button>
+                                </article>
+                            </template>
+                        </div>
+                        <div style="display: flex; justify-content: center; gap: 0.5rem; margin-top: 1rem;">
+                            <button @click="trashCurrentPage.gigs = Math.max(1, trashCurrentPage.gigs - 1)"
+                                class="secondary outline" :disabled="trashCurrentPage.gigs === 1" style="margin: 0;">←
+                                Previous</button>
+                            <span style="display: flex; align-items: center; padding: 0 0.5rem; font-size: 0.9rem;">
+                                <span
+                                    x-text="`Page ${trashCurrentPage.gigs} of ${getDeletedItemsPageCount('gigs')}`"></span>
+                            </span>
+                            <button
+                                @click="trashCurrentPage.gigs = Math.min(getDeletedItemsPageCount('gigs'), trashCurrentPage.gigs + 1)"
+                                class="secondary outline"
+                                :disabled="trashCurrentPage.gigs >= getDeletedItemsPageCount('gigs')"
+                                style="margin: 0;">Next →</button>
+                        </div>
+                    </div>
+
+                    <!-- Templates Trash -->
+                    <div x-show="deletedItems.templates && deletedItems.templates.length > 0" style="margin-top: 2rem;">
+                        <h4>Deleted Templates</h4>
+                        <div class="equipment-list">
+                            <template x-for="template in getDeletedItemsPage('templates', trashCurrentPage.templates)"
+                                :key="template._id">
+                                <article class="equipment-item">
+                                    <div>
+                                        <strong x-text="template.name"></strong>
+                                        <p class="text-muted" style="margin: 0.25rem 0;"
+                                            x-text="'Deleted ' + (new Date(template.deletedAt).toLocaleDateString())">
+                                        </p>
+                                    </div>
+                                    <button @click="restoreDeletedItem('templates', template._id)"
+                                        class="contrast">Restore</button>
+                                </article>
+                            </template>
+                        </div>
+                        <div style="display: flex; justify-content: center; gap: 0.5rem; margin-top: 1rem;">
+                            <button @click="trashCurrentPage.templates = Math.max(1, trashCurrentPage.templates - 1)"
+                                class="secondary outline" :disabled="trashCurrentPage.templates === 1"
+                                style="margin: 0;">← Previous</button>
+                            <span style="display: flex; align-items: center; padding: 0 0.5rem; font-size: 0.9rem;">
+                                <span
+                                    x-text="`Page ${trashCurrentPage.templates} of ${getDeletedItemsPageCount('templates')}`"></span>
+                            </span>
+                            <button
+                                @click="trashCurrentPage.templates = Math.min(getDeletedItemsPageCount('templates'), trashCurrentPage.templates + 1)"
+                                class="secondary outline"
+                                :disabled="trashCurrentPage.templates >= getDeletedItemsPageCount('templates')"
+                                style="margin: 0;">Next →</button>
+                        </div>
+                    </div>
+
+                    <!-- Equipment Trash -->
+                    <div x-show="deletedItems.equipment && deletedItems.equipment.length > 0" style="margin-top: 2rem;">
+                        <h4>Deleted Equipment</h4>
+                        <div class="equipment-list">
+                            <template x-for="item in getDeletedItemsPage('equipment', trashCurrentPage.equipment)"
+                                :key="item._id">
+                                <article class="equipment-item">
+                                    <div>
+                                        <strong x-text="item.name"></strong>
+                                        <p class="text-muted" style="margin: 0.25rem 0;"
+                                            x-text="'Deleted ' + (new Date(item.deletedAt).toLocaleDateString())"></p>
+                                    </div>
+                                    <button @click="restoreDeletedItem('equipment', item._id)"
+                                        class="contrast">Restore</button>
+                                </article>
+                            </template>
+                        </div>
+                        <div style="display: flex; justify-content: center; gap: 0.5rem; margin-top: 1rem;">
+                            <button @click="trashCurrentPage.equipment = Math.max(1, trashCurrentPage.equipment - 1)"
+                                class="secondary outline" :disabled="trashCurrentPage.equipment === 1"
+                                style="margin: 0;">← Previous</button>
+                            <span style="display: flex; align-items: center; padding: 0 0.5rem; font-size: 0.9rem;">
+                                <span
+                                    x-text="`Page ${trashCurrentPage.equipment} of ${getDeletedItemsPageCount('equipment')}`"></span>
+                            </span>
+                            <button
+                                @click="trashCurrentPage.equipment = Math.min(getDeletedItemsPageCount('equipment'), trashCurrentPage.equipment + 1)"
+                                class="secondary outline"
+                                :disabled="trashCurrentPage.equipment >= getDeletedItemsPageCount('equipment')"
+                                style="margin: 0;">Next →</button>
+                        </div>
+                    </div>
+
+                    <div x-show="!deletedItems.gigs?.length && !deletedItems.equipment?.length && !deletedItems.templates?.length"
+                        class="empty-state">
+                        <p>Your trash is empty!</p>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Confirmation Modal -->
+            <dialog :open="confirmationDialog.isOpen">
+                <article style="display: flex; flex-direction: column; gap: 1rem;">
+                    <header style="margin: 0;">
+                        <h3 style="margin: 0;" x-text="confirmationDialog.title"></h3>
+                    </header>
+                    <p x-text="confirmationDialog.message" style="margin: 0;"></p>
+                    <footer style="display: flex; justify-content: flex-end; gap: 0.5rem; margin: 0;">
+                        <button @click="confirmDialogAction(false)" class="secondary outline" style="margin: 0;">
+                            <span x-text="confirmationDialog.cancelText"></span>
+                        </button>
+                        <button @click="confirmDialogAction(true)"
+                            :style="confirmationDialog.isDangerous ? 'background: var(--pico-del-color, #c62828); color: white; margin: 0;' : 'margin: 0;'">
+                            <span x-text="confirmationDialog.confirmText"></span>
+                        </button>
+                    </footer>
+                </article>
+            </dialog>
+
+            <!-- Snackbar (Undo Notification) -->
+            <div x-show="snackbar.isOpen"
+                style="position: fixed; bottom: 1rem; left: 1rem; right: 1rem; max-width: 400px; background: var(--pico-form-element-background-color); border: 1px solid var(--pico-form-element-border-color); border-radius: var(--pico-border-radius); padding: 1rem; display: flex; align-items: center; gap: 1rem; z-index: 1000; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                <span x-text="snackbar.message" style="flex: 1; font-size: 0.9rem;"></span>
+                <button @click="snackbarUndo()" class="secondary outline"
+                    style="margin: 0; white-space: nowrap; padding: 0.375rem 0.75rem; font-size: 0.85rem;">
+                    Undo
+                </button>
+                <button @click="dismissSnackbar()" class="secondary outline"
+                    style="margin: 0; padding: 0.375rem 0.5rem; font-size: 0.85rem; color: var(--pico-muted-color); border: none; background: transparent; cursor: pointer;">
+                    ✕
+                </button>
             </div>
         </main>
     </div>
 </body>
+
 </html>

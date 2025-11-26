@@ -1,3 +1,14 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(chmod:*)",
+      "Bash(git add:*)",
+      "Bash(git rm:*)",
+      "Bash(tree:*)",
+      "Bash(find . -maxdepth 1 -type f ( -name \"CLERK_SETUP.md\" -o -name \"DEBUGGING.md\" -o -name \"DOCKER_SETUP.md\" -o -name \"GETTING_STARTED.md\" -o -name \"GITHUB_ACTIONS_DEPLOY.md\" -o -name \"INTEGRATION_PLAN.md\" -o -name \"LINUX_DEPLOYMENT_PROXY.md\" -o -name \"PRD.md\" -o -name \"PRD-jwt-proxy.md\" -o -name \"prd-tenant-creation.md\" -o -name \"SECURITY_AUDIT_SUMMARY.md\" -o -name \"SECURITY_CHECKLIST.md\" -o -name \"TENANT_DETERMINATION.md\" -o -name \"TENANT_MODE.md\" -o -name \"main.py\" -o -name \"test_main.py\" ) -delete)",
+      "Bash(cat:*)",
+      "Bash(curl:*)"
+    ]
+  },
   "outputStyle": "default"
 }
