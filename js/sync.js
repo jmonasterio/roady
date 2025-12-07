@@ -1,5 +1,5 @@
 // Sync management functionality
-const Sync = {
+window.Sync = {
     syncHandler: null,
     syncStatus: 'idle', // idle, active, paused, error, complete
 
@@ -11,7 +11,11 @@ const Sync = {
         }
 
         console.log('[setupSync] Starting sync setup with URL:', couchDbUrl);
-        console.log('[setupSync] Auth status:', window.Auth?.getAuthStatus());
+
+        // Wait for auth to be ready (up to 30 seconds)
+        console.log('[setupSync] Waiting for Auth to be ready...');
+        await window.Auth?.waitForAuth(30000);
+        console.log('[setupSync] Auth ready! Status:', window.Auth?.getAuthStatus());
 
         // Check if user is authenticated
         if (!window.Auth?.isAuthenticated()) {
@@ -62,48 +66,48 @@ const Sync = {
                 live: true,
                 retry: true
             })
-            .on('change', (info) => {
-                console.log('Sync change:', info);
-                console.log('Direction:', info.direction, 'Docs changed:', info.change?.docs?.length || 0);
-                this.syncStatus = 'active';
-                // Dispatch event for UI to listen
-                window.dispatchEvent(new CustomEvent('db-sync-change', {
-                    detail: { info }
-                }));
-            })
-            .on('paused', (err) => {
-                console.log('Sync paused', err ? `with error: ${err}` : '(waiting for changes)');
-                this.syncStatus = err ? 'error' : 'paused';
-                window.dispatchEvent(new CustomEvent('db-sync-paused', {
-                    detail: { error: err }
-                }));
-            })
-            .on('active', () => {
-                console.log('Sync active');
-                this.syncStatus = 'active';
-                window.dispatchEvent(new CustomEvent('db-sync-active'));
-            })
-            .on('denied', (err) => {
-                console.error('Sync denied:', err);
-                this.syncStatus = 'error';
-                window.dispatchEvent(new CustomEvent('db-sync-error', {
-                    detail: { error: err }
-                }));
-            })
-            .on('complete', (info) => {
-                console.log('Sync complete:', info);
-                this.syncStatus = 'complete';
-                window.dispatchEvent(new CustomEvent('db-sync-complete', {
-                    detail: { info }
-                }));
-            })
-            .on('error', (err) => {
-                console.error('Sync error:', err);
-                this.syncStatus = 'error';
-                window.dispatchEvent(new CustomEvent('db-sync-error', {
-                    detail: { error: err }
-                }));
-            });
+                .on('change', (info) => {
+                    console.log('Sync change:', info);
+                    console.log('Direction:', info.direction, 'Docs changed:', info.change?.docs?.length || 0);
+                    this.syncStatus = 'active';
+                    // Dispatch event for UI to listen
+                    window.dispatchEvent(new CustomEvent('db-sync-change', {
+                        detail: { info }
+                    }));
+                })
+                .on('paused', (err) => {
+                    console.log('Sync paused', err ? `with error: ${err}` : '(waiting for changes)');
+                    this.syncStatus = err ? 'error' : 'paused';
+                    window.dispatchEvent(new CustomEvent('db-sync-paused', {
+                        detail: { error: err }
+                    }));
+                })
+                .on('active', () => {
+                    console.log('Sync active');
+                    this.syncStatus = 'active';
+                    window.dispatchEvent(new CustomEvent('db-sync-active'));
+                })
+                .on('denied', (err) => {
+                    console.error('Sync denied:', err);
+                    this.syncStatus = 'error';
+                    window.dispatchEvent(new CustomEvent('db-sync-error', {
+                        detail: { error: err }
+                    }));
+                })
+                .on('complete', (info) => {
+                    console.log('Sync complete:', info);
+                    this.syncStatus = 'complete';
+                    window.dispatchEvent(new CustomEvent('db-sync-complete', {
+                        detail: { info }
+                    }));
+                })
+                .on('error', (err) => {
+                    console.error('Sync error:', err);
+                    this.syncStatus = 'error';
+                    window.dispatchEvent(new CustomEvent('db-sync-error', {
+                        detail: { error: err }
+                    }));
+                });
 
             console.log('CouchDB sync setup complete for:', baseUrl);
             return true;
@@ -155,7 +159,7 @@ const Sync = {
 
 // Export for use in other modules
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = Sync;
+    module.exports = window.Sync;
 } else {
     window.Sync = Sync;
 }

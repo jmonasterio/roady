@@ -35,6 +35,34 @@ npx browser-sync start --server --files "**/*.html, **/*.css, **/*.js"
 
 2. Open browser to `http://localhost:8000`
 
+## Clerk Configuration
+
+### JWT Configuration
+
+Roady requires the `active_tenant_id` claim in the session token to support multi-tenancy. You must configure this in the **Default Session Token** for your Clerk application.
+
+**Important**: DEV and PROD environments use **different Clerk applications**:
+- **DEV**: `https://desired-lab-27.clerk.accounts.dev` (local development)
+- **PROD**: `https://clerk.jmonasterio.github.io` (production deployment)
+
+#### Configuration Steps
+
+1. Go to your Clerk Dashboard for the appropriate environment
+2. Navigate to **Configure** → **Sessions**
+3. Find the **Customize session token** section (click "Edit" or the link)
+4. Add the following to the **Claims** JSON:
+
+```json
+{
+  "active_tenant_id": "{{session.public_metadata.active_tenant_id}}"
+}
+```
+
+5. **Save** the changes
+
+> **Note**: This configuration ensures that `window.Clerk.session.getToken()` automatically includes the tenant ID without needing a specific template name.
+
+
 ## Tech Stack
 
 - **Alpine.js** - Lightweight reactive framework

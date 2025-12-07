@@ -1,5 +1,5 @@
 // Clerk-specific authentication utilities
-const ClerkAuth = {
+window.ClerkAuth = {
     // Wait for Clerk to be ready and user to be signed in
     async waitForClerk(maxWait = 5000) {
         const startTime = Date.now();
@@ -88,7 +88,5 @@ const ClerkAuth = {
 
 // Export for use in other modules
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = ClerkAuth;
-} else {
-    window.ClerkAuth = ClerkAuth;
+    module.exports = window.ClerkAuth;
 }

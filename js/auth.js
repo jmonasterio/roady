@@ -1,5 +1,5 @@
 // Generic authentication interface (currently implemented using Clerk)
-const Auth = {
+window.Auth = {
     // Check if user is authenticated
     isAuthenticated() {
         return window.ClerkAuth?.isSignedIn() || false;
@@ -82,7 +82,5 @@ const Auth = {
 
 // Export for use in other modules
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = Auth;
-} else {
-    window.Auth = Auth;
+    module.exports = window.Auth;
 }

@@ -24,13 +24,10 @@
     <script src="https://cdn.jsdelivr.net/npm/pouchdb@8.0.1/dist/pouchdb.min.js"></script>
     <script src="https://unpkg.com/nostr-tools@2.5.2/lib/nostr.bundle.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <script src="js/clerk.js"></script>\n
-    <script src="js/auth.js"></script>\n
-    <script src="js/sync.js"></script>\n
-    <script src="js/clerk.js"></script>\n
-    <script src="js/auth.js"></script>\n
-    <script src="js/sync.js"></script>\n
-    <script src="js/db.js"></script>\n
+    <script src="js/clerk.js"></script>
+    <script src="js/auth.js"></script>
+    <script src="js/sync.js"></script>
+    <script src="js/db.js"></script>
     <script src="js/storage.js"></script>
     <script src="js/tenant-manager.js"></script>
     <script src="js/app.js"></script>
@@ -41,276 +38,20 @@
         type="text/javascript">
         </script>
 
-    <script type="text/javascript">
-        /**
-         * Initialize authenticated app with tenant context
-         * This is the critical flow that must happen before showing any UI
-         */
-        async function initializeAuthenticatedApp(navBar, mainContent) {
-            try {
-                console.log('🚀 Step 1: Initializing authenticated app with tenant context...');
 
-                // Step 1: Initialize tenant context
-                console.log('🚀 Step 2: Creating TenantManager...');
-                const tenantManager = new TenantManager();
 
-                console.log('🚀 Step 3: Calling tenantManager.initializeTenantContext()...');
-                let tenant;
-                try {
-                    tenant = await tenantManager.initializeTenantContext();
-                    console.log(`✅ Step 4: Tenant initialized: ${tenant.name} (${tenant.tenantId})`);
-                } catch (error) {
-                    console.error('❌ Step 4: Tenant initialization failed:', error);
-                    // Continue without tenant context for now
-                    tenant = null;
-                }
-
-                // Step 2: Show loading state
-                showLoadingState(mainContent);
-
-                // Step 3: Initialize database
-                if (window.DB && typeof DB.init === 'function') {
-                    console.log('🚀 Step 5: Initializing database...');
-                    DB.init();
-                    console.log('✅ Step 6: Database initialized');
-                }
-
-                // Step 4: Show main UI
-                console.log('🚀 Step 7: Showing authenticated UI...');
-                showAuthenticatedUI(navBar, mainContent, tenant);
-
-                // Step 5: Make tenant manager globally available
-                window.tenantManager = tenantManager;
-
-                console.log('✅ Step 8: Authenticated app initialization complete');
-
-            } catch (error) {
-                console.error('❌ Failed to initialize authenticated app:', error);
-                console.error('❌ Error details:', error.stack);
-                showErrorState(mainContent, error.message);
-            }
-        }
-
-        /**
-         * Show loading state during tenant initialization
-         */
-        function showLoadingState(mainContent) {
-            mainContent.style.display = '';
-            mainContent.innerHTML = `
-                <div style="text-align: center; padding: 2rem;">
-                    <h3>🔧 Initializing Roady...</h3>
-                    <p>Setting up your workspace, please wait...</p>
-                </div>
-            `;
-        }
-
-        /**
-         * Show authenticated UI with tenant info
-         */
-        function showAuthenticatedUI(navBar, mainContent, tenant) {
-            // Render full UI
-            navBar.style.display = '';
-            mainContent.style.display = '';
-
-            // Remove sign-in overlay if present
-            const signInDiv = document.getElementById('sign-in');
-            if (signInDiv) signInDiv.remove();
-
-            // Add tenant info to navigation
-            addTenantInfoToNav(navBar, tenant);
-
-            // Try to improve user profile for future tenant creation
-            try {
-                if (window.Clerk?.user && (!window.Clerk.user.firstName || !window.Clerk.user.lastName)) {
-                    console.log('🔧 User profile incomplete - consider setting your name in Clerk settings');
-                }
-            } catch (e) {
-                console.log('🔧 Could not check user profile');
-            }
-
-            // Mount user button in header (far right)
-            let userButtonDiv = document.getElementById('user-button');
-            if (!userButtonDiv) {
-                userButtonDiv = document.createElement('div');
-                userButtonDiv.id = 'user-button';
-                userButtonDiv.style.display = 'inline-block';
-                userButtonDiv.style.float = 'right';
-                userButtonDiv.style.marginLeft = '1rem';
-                // Find the rightmost <ul> in navBar
-                const navLists = navBar.querySelectorAll('ul');
-                if (navLists.length > 1) {
-                    navLists[1].appendChild(userButtonDiv);
-                } else {
-                    navBar.appendChild(userButtonDiv);
-                }
-            }
-            Clerk.mountUserButton(userButtonDiv);
-
-            // Don't clear the main content - let Alpine handle it
-            // The main content already has the Alpine.js templates
-
-            // Initialize the app after tenant context is ready
-            initializeAlpineApp(tenant);
-        }
-
-        /**
-         * Initialize Alpine.js app after tenant context is established
-         */
-        function initializeAlpineApp(tenant) {
-            console.log('🚀 Initializing Alpine.js app with tenant:', tenant);
-
-            // Remove loading state but keep the Alpine templates
-            const mainContent = document.querySelector('main.container');
-            if (mainContent) {
-                // Find and remove only the loading elements, not the Alpine templates
-                const loadingElements = mainContent.children;
-                for (let i = loadingElements.length - 1; i >= 0; i--) {
-                    const element = loadingElements[i];
-                    if (element.textContent && element.textContent.includes('Initializing Roady')) {
-                        element.remove();
-                    }
-                }
-            }
-
-            // Store tenant globally for Alpine app to access during init
-            window.tenantFromManager = tenant;
-
-            // Wait for Alpine to be ready, then trigger app initialization
-            if (window.Alpine) {
-                console.log('✅ Alpine already loaded, initializing app...');
-                // Alpine is already loaded, need to manually trigger the app's init method
-                const appContainer = document.querySelector('body > div[x-data]');
-                if (appContainer) {
-                    // Get the Alpine data instance and call init() manually
-                    Alpine.$data(appContainer).init();
-                }
-            } else {
-                console.log('⏳ Waiting for Alpine to load...');
-                // Wait for Alpine to load
-                document.addEventListener('alpine:initialized', () => {
-                    console.log('✅ Alpine loaded, initializing app...');
-                    const appContainer = document.querySelector('body > div[x-data]');
-                    if (appContainer) {
-                        Alpine.$data(appContainer).init();
-                    }
-                });
-            }
-        }
-
-        /**
-         * Add tenant information to navigation
-         */
-        function addTenantInfoToNav(navBar, tenant) {
-            // Add tenant info before the user button
-            const tenantInfo = document.createElement('div');
-            tenantInfo.style.display = 'inline-block';
-            tenantInfo.style.marginRight = '1rem';
-            tenantInfo.style.padding = '0.5rem';
-            tenantInfo.style.background = 'var(--pico-primary, #5a67d8)';
-            tenantInfo.style.color = 'white';
-            tenantInfo.style.borderRadius = '4px';
-            // Improve tenant name display
-            let displayName = tenant.name;
-            if (tenant.personal && displayName.includes('for None')) {
-                // Try to get user email for a better name
-                try {
-                    const userEmail = window.Clerk?.user?.primaryEmailAddress?.emailAddress;
-                    if (userEmail) {
-                        const username = userEmail.split('@')[0];
-                        displayName = `${username}'s Workspace`;
-                    } else {
-                        displayName = 'Personal Workspace';
-                    }
-                } catch (e) {
-                    displayName = 'Personal Workspace';
-                }
-            }
-            tenantInfo.innerHTML = `
-                <span style="font-weight: bold;">${displayName}</span>
-                ${tenant.personal ? '<small>(Personal)</small>' : ''}
-            `;
-
-            // Add tenant info to the rightmost <ul> in nav (before user button)
-            const navLists = navBar.querySelectorAll('ul');
-            if (navLists.length > 1) {
-                // Add to the rightmost ul as a new list item
-                const tenantLi = document.createElement('li');
-                tenantLi.style.marginRight = '1rem';
-                tenantLi.innerHTML = tenantInfo.innerHTML;
-                navLists[1].appendChild(tenantLi);
-            } else {
-                // Fallback: add tenant info before user button
-                const userButton = document.getElementById('user-button');
-                if (userButton) {
-                    userButton.parentNode.insertBefore(tenantInfo, userButton);
-                } else {
-                    navBar.appendChild(tenantInfo);
-                }
-            }
-        }
-
-        /**
-         * Show error state
-         */
-        function showErrorState(mainContent, errorMessage) {
-            mainContent.style.display = '';
-            mainContent.innerHTML = `
-                <div style="text-align: center; padding: 2rem; color: #e53e3e;">
-                    <h3>❌ Initialization Failed</h3>
-                    <p>${errorMessage}</p>
-                    <button onclick="location.reload()" style="margin-top: 1rem;">Try Again</button>
-                </div>
-            `;
-        }
-
-        window.addEventListener('load', async function () {
-            await Clerk.load();
-
-            const appContainer = document.querySelector('body > div[x-data]');
-            const navBar = document.querySelector('nav.container-fluid');
-            const mainContent = document.querySelector('main.container');
-
-            if (!appContainer || !navBar || !mainContent) return;
-
-            if (Clerk.isSignedIn) {
-                console.log('🔍 Clerk.isSignedIn is true - calling initializeAuthenticatedApp');
-                // CRITICAL: Initialize tenant context before showing UI
-                initializeAuthenticatedApp(navBar, mainContent);
-            } else {
-                console.log('🔍 Clerk.isSignedIn is false - showing sign-in');
-                // Render only header bar with 'Roady', remove rest
-                navBar.style.display = '';
-                mainContent.style.display = 'none';
-                // Remove all children from mainContent
-                while (mainContent.firstChild) {
-                    mainContent.removeChild(mainContent.firstChild);
-                }
-                // Optionally, mount Clerk sign-in UI as overlay
-                if (!document.getElementById('sign-in')) {
-                    const signInDiv = document.createElement('div');
-                    signInDiv.id = 'sign-in';
-                    signInDiv.style.position = 'fixed';
-                    signInDiv.style.top = '0';
-                    signInDiv.style.left = '0';
-                    signInDiv.style.width = '100vw';
-                    signInDiv.style.height = '100vh';
-                    signInDiv.style.background = 'var(--pico-background-color, #222)';
-                    signInDiv.style.zIndex = '1000';
-                    signInDiv.style.display = 'flex';
-                    signInDiv.style.alignItems = 'center';
-                    signInDiv.style.justifyContent = 'center';
-                    document.body.appendChild(signInDiv);
-                    Clerk.mountSignIn(signInDiv);
-                }
-            }
-        });
-    </script>
+    <!-- 
+      CRITICAL FIX: We are removing the complex manual initialization script.
+      Instead, we will rely on app.js to handle initialization via x-init.
+      We need to ensure app.js has the robust init logic.
+    -->
 
     <!-- Service Worker Registration -->
     <script>
-        if ('serviceWorker' in navigator) {
+        // Only register service worker in production (not on localhost)
+        if ('serviceWorker' in navigator && !window.location.hostname.includes('localhost')) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/js/sw.js')
+                navigator.serviceWorker.register('/sw.js')
                     .then(registration => {
                         console.log('ServiceWorker registered:', registration);
                     })
@@ -318,6 +59,8 @@
                         console.log('ServiceWorker registration failed:', error);
                     });
             });
+        } else if (window.location.hostname.includes('localhost')) {
+            console.log('🔧 Development mode: Service Worker disabled');
         }
     </script>
 </head>
@@ -328,7 +71,7 @@
             <ul>
                 <li><strong>Roady</strong></li>
             </ul>
-            <ul>
+            <ul x-show="!isLoading">
                 <li><a href="#" @click.prevent="currentView = 'gigs'"
                         :class="{ active: currentView === 'gigs' }">Gigs</a></li>
                 <li><a href="#" @click.prevent="currentView = 'settings'"
@@ -339,15 +82,6 @@
         </nav>
 
         <main class="container">
-            <!-- Debug Info -->
-            <div style="background: #f0f0f0; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
-                <strong>Debug Info:</strong><br>
-                currentView: <span x-text="currentView"></span><br>
-                isLoading: <span x-text="isLoading"></span><br>
-                gigs.length: <span x-text="gigs ? gigs.length : 'null'"></span><br>
-                equipment.length: <span x-text="equipment ? equipment.length : 'null'"></span><br>
-                gigTypes.length: <span x-text="gigTypes ? gigTypes.length : 'null'"></span>
-            </div>
 
             <!-- Gigs View (Primary) -->
             <div x-show="currentView === 'gigs'">
@@ -355,7 +89,7 @@
                     <h2 x-text="isLoading ? 'Loading...' : 'Gigs'"></h2>
                     <p x-show="!isLoading">Schedule and manage your gigs</p>
                 </hgroup>
-                <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem;">
+                <div x-show="!isLoading" style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem;">
                     <button @click="openCreateGigDialog()">+ Create Gig</button>
                     <button @click="showPastGigs = !showPastGigs" class="secondary outline"
                         x-text="showPastGigs ? 'Hide Past Gigs' : 'Show Past Gigs'"></button>
@@ -441,9 +175,10 @@
                             </div>
                         </article>
                     </template>
-                    <p x-show="getFilteredGigs().length === 0 && !showPastGigs" class="empty-state">No upcoming gigs.
-                        Create your first gig!</p>
-                    <p x-show="getFilteredGigs().length === 0 && showPastGigs" class="empty-state">No gigs found.</p>
+                    <p x-show="!isLoading && getFilteredGigs().length === 0 && !showPastGigs" class="empty-state">No
+                        upcoming gigs. First, go to Settings to add equipment and create templates. Then come back here
+                        to create your first gig!</p>
+                    <p x-show=" getFilteredGigs().length===0 && showPastGigs" class="empty-state">No gigs found.</p>
                 </div>
 
                 <!-- Leaving for Gig (Load-out) -->
@@ -462,15 +197,15 @@
                                     style="margin-top: 0.5rem;">
                                     <p x-show="selectedGig && selectedGig.arrivalTime" class="text-muted"
                                         style="margin: 0;">
-                                        ⏰ Arrival: <span x-text="selectedGig.arrivalTime"></span>
+                                        ⏰ Arrival: <span x-text="selectedGig?.arrivalTime"></span>
                                     </p>
                                     <p x-show="selectedGig && selectedGig.doorsOpenTime" class="text-muted"
                                         style="margin: 0;">
-                                        🚪 Doors: <span x-text="selectedGig.doorsOpenTime"></span>
+                                        🚪 Doors: <span x-text="selectedGig?.doorsOpenTime"></span>
                                     </p>
                                 </div>
                                 <p x-show="selectedGig && selectedGig.mapLink" style="margin-top: 0.5rem;">
-                                    <a :href="selectedGig.mapLink" target="_blank" rel="noopener">📍 Open Map</a>
+                                    <a :href="selectedGig?.mapLink" target="_blank" rel="noopener">📍 Open Map</a>
                                 </p>
                             </div>
                         </header>
@@ -602,15 +337,15 @@
                                     style="margin-top: 0.5rem;">
                                     <p x-show="selectedGig && selectedGig.arrivalTime" class="text-muted"
                                         style="margin: 0;">
-                                        ⏰ Arrival: <span x-text="selectedGig.arrivalTime"></span>
+                                        ⏰ Arrival: <span x-text="selectedGig?.arrivalTime"></span>
                                     </p>
                                     <p x-show="selectedGig && selectedGig.doorsOpenTime" class="text-muted"
                                         style="margin: 0;">
-                                        🚪 Doors: <span x-text="selectedGig.doorsOpenTime"></span>
+                                        🚪 Doors: <span x-text="selectedGig?.doorsOpenTime"></span>
                                     </p>
                                 </div>
                                 <p x-show="selectedGig && selectedGig.mapLink" style="margin-top: 0.5rem;">
-                                    <a :href="selectedGig.mapLink" target="_blank" rel="noopener">📍 Open Map</a>
+                                    <a :href="selectedGig?.mapLink" target="_blank" rel="noopener">📍 Open Map</a>
                                 </p>
                             </div>
                         </header>
@@ -749,7 +484,8 @@
                                 <button @click="editEquipment(item)" class="contrast">Edit</button>
                             </article>
                         </template>
-                        <p x-show="equipment.length === 0" class="empty-state">No equipment yet. Add your first item!
+                        <p x-show="equipment.length === 0" class="empty-state">No equipment yet. Add items for each
+                            piece of gear you bring to gigs (mics, cables, amps, etc.), then assign them to templates.
                         </p>
                     </div>
                 </section>
@@ -815,8 +551,8 @@
                                 </div>
                             </article>
                         </template>
-                        <p x-show="gigTypes.length === 0" class="empty-state">No templates yet. Create your first
-                            template!</p>
+                        <p x-show="gigTypes.length === 0" class="empty-state">No templates yet. Create templates for
+                            different equipment configurations, like "Small Club", "Outdoor Festival", or "Theater".</p>
                     </div>
                 </section>
 
@@ -828,15 +564,11 @@
 
                     <div style="margin-top: 2rem;">
                         <h4>Sync Settings</h4>
+
                         <label>
                             CouchDB URL
-                            <input type="url" x-model="options.couchDbUrl" @change="saveOptions()"
-                                placeholder="https://username:password@your-couchdb-server.com" />
-                            <small class="text-muted">
-                                Optional: URL for CouchDB server with embedded credentials for data synchronization.
-                                Format: <code>https://username:password@server.com</code><br>
-                                Leave empty to use local storage only.
-                            </small>
+                            <input type="text" x-model="options.couchDbUrl" @change="saveOptions()"
+                                placeholder="http://localhost:5985/roady" />
                         </label>
 
                         <div x-show="options.couchDbUrl" style="margin-top: 1rem;">
@@ -853,29 +585,7 @@
                                 style="margin-top: 1rem; padding: 1rem; background: var(--pico-del-background-color, #ffebee); color: var(--pico-del-color, #c62828); border-radius: var(--pico-border-radius);">
                                 <strong>⚠ Error:</strong> <span x-text="syncError"></span>
                             </div>
-
-                            <p class="text-muted" style="margin-top: 1rem; font-size: 0.9rem;">
-                                <strong>Note:</strong> Sync is bidirectional and continuous. Changes made on this device
-                                will sync to the server, and changes from other devices will sync here automatically.
-                            </p>
-                            <details style="margin-top: 1rem;">
-                                <summary style="cursor: pointer; font-weight: bold;">Setup Instructions for CouchDB
-                                </summary>
-                                <ol style="margin-top: 0.5rem; font-size: 0.9rem;">
-                                    <li>Create a database named <code>roady</code> on your CouchDB server</li>
-                                    <li>Enable CORS on your CouchDB server to allow your domain</li>
-                                    <li>Include credentials in the URL:
-                                        <code>https://username:password@your-server.com</code></li>
-                                    <li>Save the URL in the field above to start syncing</li>
-                                </ol>
-                            </details>
                         </div>
-                    </div>
-
-                    <div style="margin-top: 2rem;">
-                        <h4>Data Management</h4>
-                        <p class="text-muted">Data export/import features coming soon.</p>
-                    </div>
                 </section>
 
                 <!-- Trash Section -->

@@ -1,7 +1,315 @@
+// Alpine.js main application
+; document.addEventListener('alpine:init', () => {
+    Alpine.data('roady', () => ({
+        // State
+        currentView: 'gigs',
+        equipment: [],
+        gigTypes: [],
+        gigs: [],
+        selectedGigId: null,
+        selectedGig: null,
+        gigChecklistMode: null, // 'leavingForGig' or 'leavingFromGig'
 
+        // Deleted items state
+        deletedItems: {
+            gigs: [],
+            equipment: [],
+            templates: []
+        },
+        trashCurrentPage: {
+            gigs: 1,
+            equipment: 1,
+            templates: 1
+        },
+        trashItemsPerPage: 10,
+
+        // Tenant state
+        showTenantSelection: false,
+        tenantIdInput: 'demo',
+
+        // UI state
+        showAddEquipment: false,
+        showAddGigType: false,
+        showAddGig: false,
+        editingEquipment: null,
+        editingGigType: null,
+        editingGig: null,
+        showAddItemToGig: false,
+        showAddToGigTypeConfirm: false,
+        showPastGigs: false,
+        showLoadedItems: false,
+        showPackedItems: false,
+        isLoading: true,
+
+        // Form data
+        newEquipment: {
+            name: '',
+            description: ''
+        },
+        newGigType: {
+            name: '',
+            equipment: []  // Array of { equipmentId, quantity }
+        },
+        newGig: {
+            name: '',
+            date: '',
+            gigTypeId: '',
+            arrivalTime: '',
+            doorsOpenTime: '',
+            mapLink: ''
+        },
+        newItemForGig: {
+            equipmentId: '',
+            newEquipmentName: '',
+            addedEquipmentId: null,
+            addedEquipmentName: ''
+        },
+        options: {
+            couchDbUrl: '',
+            tenantId: ''
+        },
+        syncStatus: 'idle',
+        syncError: null,
+
+        // Confirmation dialog state
+        confirmationDialog: {
+            isOpen: false,
+            title: '',
+            message: '',
+            confirmText: 'Confirm',
+            cancelText: 'Cancel',
+            action: null,
+            isDangerous: false
+        },
+
+        // Snackbar state
+        snackbar: {
+            isOpen: false,
+            message: '',
+            action: null,
+            timeout: null
+        },
+
+        // Initialize
+        async init() {
+            console.log('🚀 Roady App Initializing...');
+            this.isLoading = true;
+
+            // 1. Wait for Clerk to load
+            if (!window.Clerk) {
+                console.log('⏳ Waiting for Clerk...');
+                // Simple retry mechanism
+                let retries = 0;
+                while (!window.Clerk && retries < 20) {
+                    await new Promise(r => setTimeout(r, 100));
+                    retries++;
+                }
+            }
+
+            if (window.Clerk) {
+                await Clerk.load();
+            } else {
+                console.error('❌ Clerk failed to load');
+                return;
+            }
+
+            // 2. Check Authentication
+            if (!Clerk.isSignedIn) {
+                console.log('👤 User not signed in - showing sign-in');
+                this.isLoading = false;
+                // Mount sign-in UI
+                const mainContent = document.querySelector('main.container');
+                if (mainContent) {
+                    mainContent.innerHTML = '<div id="sign-in-container" style="display: flex; justify-content: center; margin-top: 2rem;"></div>';
+                    Clerk.mountSignIn(document.getElementById('sign-in-container'));
+                }
+                return;
+            }
+
+            console.log('👤 User signed in:', Clerk.user.primaryEmailAddress?.emailAddress);
+
+            // 3. Initialize Tenant Context
+            try {
+                console.log('🏢 Initializing Tenant Context...');
+                const tenantManager = new TenantManager();
+                window.tenantManager = tenantManager;
+
+                const tenant = await tenantManager.initializeTenantContext();
+                this.options.tenantId = tenant.tenantId;
+
+                // Set tenant in DB layer
+                DB.setTenant(tenant.tenantId);
+
+                console.log('✅ Tenant Initialized:', tenant.name);
+
+                // Update UI with tenant info
+                this.updateTenantDisplay(tenant);
+
+            } catch (e) {
+                console.error('❌ Tenant initialization failed:', e);
+                // Continue anyway, maybe we have cached options
+            }
+
+            // 4. Load Options and Data
+            await this.loadOptions();
+
+            // If we still don't have a tenant ID (and init failed), try to get from options
+            if (!this.options.tenantId) {
+                console.warn('⚠️ No tenant context available');
+                // Show tenant selection or error
+            }
+
+            await this.loadData();
+            this.isLoading = false;
+
+            // 5. Setup Sync
+            this.setupSyncListeners();
+            if (this.options.couchDbUrl) {
+                this.enableSync();
+            }
+
+            // 6. Mount User Button
+            this.mountUserButton();
+        },
+
+        updateTenantDisplay(tenant) {
+            const navBar = document.querySelector('nav.container-fluid');
+            if (!navBar) return;
+
+            // Remove existing tenant info if any
+            const existingInfo = document.getElementById('tenant-info-display');
+            if (existingInfo) existingInfo.remove();
+
+            // Create display
+            const tenantInfo = document.createElement('div');
+            tenantInfo.id = 'tenant-info-display';
+            tenantInfo.style.display = 'inline-block';
+            tenantInfo.style.marginRight = '1rem';
+            tenantInfo.style.padding = '0.5rem';
+            tenantInfo.style.background = 'var(--pico-primary, #5a67d8)';
+            tenantInfo.style.color = 'white';
+            tenantInfo.style.borderRadius = '4px';
+
+            let displayName = tenant.name;
+            if (tenant.personal && displayName.includes('for None')) {
+                const email = Clerk.user?.primaryEmailAddress?.emailAddress;
+                displayName = email ? `${email.split('@')[0]}'s Workspace` : 'Personal Workspace';
+            }
+
+            tenantInfo.innerHTML = `
+                <span style="font-weight: bold;">${displayName}</span>
+                ${tenant.personal ? '<small>(Personal)</small>' : ''}
+            `;
+
+            // Insert into nav
+            const userButton = document.getElementById('user-button-container');
+            if (userButton) {
+                userButton.parentNode.insertBefore(tenantInfo, userButton);
+            } else {
+                const navLists = navBar.querySelectorAll('ul');
+                if (navLists.length > 1) {
+                    const li = document.createElement('li');
+                    li.appendChild(tenantInfo);
+                    navLists[1].insertBefore(li, navLists[1].lastElementChild);
+                }
+            }
+        },
+
+        mountUserButton() {
+            const navBar = document.querySelector('nav.container-fluid');
+            if (!navBar) return;
+
+            let container = document.getElementById('user-button-container');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'user-button-container';
+                container.style.display = 'inline-block';
+
+                const navLists = navBar.querySelectorAll('ul');
+                if (navLists.length > 1) {
+                    const li = document.createElement('li');
+                    li.appendChild(container);
+                    navLists[1].appendChild(li);
+                }
+            }
+
+            if (!container.hasChildNodes()) {
+                Clerk.mountUserButton(container);
+            }
+        },
+
+        async loadData() {
+            this.equipment = await DB.getAllEquipment();
+            this.gigTypes = await DB.getAllGigTypes();
+            this.gigs = await DB.getAllGigs();
+        },
+
+        async loadDeletedItems() {
+            this.deletedItems.gigs = await DB.getDeletedGigs();
+            this.deletedItems.equipment = await DB.getDeletedEquipment();
+            this.deletedItems.templates = await DB.getDeletedGigTypes();
+        },
+
+        getDeletedItemsPage(type, currentPage) {
+            const items = this.deletedItems[type] || [];
+            const start = (currentPage - 1) * this.trashItemsPerPage;
+            const end = start + this.trashItemsPerPage;
+            return items.slice(start, end);
+        },
+
+        getDeletedItemsPageCount(type) {
+            const items = this.deletedItems[type] || [];
+            return Math.max(1, Math.ceil(items.length / this.trashItemsPerPage));
+        },
+
+        async restoreDeletedItem(type, id) {
+            if (type === 'gigs') {
+                await DB.restoreGig(id);
+            } else if (type === 'equipment') {
+                await DB.restoreEquipment(id);
+            } else if (type === 'templates') {
+                await DB.restoreGigType(id);
+            }
+            await this.loadData();
+            await this.loadDeletedItems();
+        },
+
+        // Options methods
+        async loadOptions() {
+            try {
+                const saved = await DB.getOptions();
+                if (saved && Object.keys(saved).length > 0) {
+                    this.options = saved;
+                }
+
+                // Default sync URL if missing
+                if (!this.options.couchDbUrl) {
+                    console.log('🔧 Setting default CouchDB URL');
+                    this.options.couchDbUrl = 'http://localhost:5985/roady';
+                    await this.saveOptions();
+                }
+            } catch (e) {
+                console.error('Failed to load options:', e);
+            }
+        },
+
+        async saveOptions() {
+            try {
+                await DB.saveOptions(this.options);
+            } catch (e) {
+                console.error('Failed to save options:', e);
+            }
+
+            // Update sync when URL changes
+            if (this.options.couchDbUrl && this.options.couchDbUrl.trim()) {
+                this.enableSync();
+            } else {
+                this.disableSync();
+            }
+        },
 
         // Sync methods
-        enableSync() {
+        async enableSync() {
             if (!this.options.couchDbUrl) return;
 
             this.syncError = null;
@@ -124,6 +432,7 @@
                 const equipment = this.equipment.find(e => e._id === id);
                 await DB.deleteEquipment(id);
                 await this.loadData();
+                this.cancelEquipmentEdit();
 
                 // Show snackbar with undo
                 this.showSnackbar(
@@ -219,6 +528,7 @@
                 const gigType = this.gigTypes.find(t => t._id === id);
                 await DB.deleteGigType(id);
                 await this.loadData();
+                this.cancelGigTypeEdit();
 
                 // Show snackbar with undo
                 this.showSnackbar(
@@ -254,7 +564,10 @@
 
         // Gig methods
         async saveGig() {
-            if (!this.newGig.name.trim() || !this.newGig.date || !this.newGig.gigTypeId) return;
+            if (!this.newGig.name.trim() || !this.newGig.date || !this.newGig.gigTypeId) {
+                alert('Please fill in Name, Date, and Template');
+                return;
+            }
 
             if (this.editingGig) {
                 // Check if gig type is changing

@@ -90,7 +90,7 @@ Edit `manifest.json`:
 
 Edit `index.html` service worker registration:
 ```html
-navigator.serviceWorker.register('/roady/js/sw.js')
+navigator.serviceWorker.register('/sw.js')
 ```
 
 Edit `js/sw.js` cache URLs:
