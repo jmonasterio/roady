@@ -71,7 +71,7 @@
             <ul>
                 <li><strong>Roady</strong></li>
             </ul>
-            <ul x-show="!isLoading">
+            <ul x-show="!isLoading && isAuthenticated">
                 <li><a href="#" @click.prevent="currentView = 'gigs'"
                         :class="{ active: currentView === 'gigs' }">Gigs</a></li>
                 <li><a href="#" @click.prevent="currentView = 'settings'"

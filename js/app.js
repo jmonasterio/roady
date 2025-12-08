@@ -27,6 +27,9 @@
         showTenantSelection: false,
         tenantIdInput: 'demo',
 
+        // Authentication state
+        isAuthenticated: false,
+
         // UI state
         showAddEquipment: false,
         showAddGigType: false,
@@ -116,6 +119,7 @@
             // 2. Check Authentication
             if (!Clerk.isSignedIn) {
                 console.log('👤 User not signed in - showing sign-in');
+                this.isAuthenticated = false;
                 this.isLoading = false;
                 // Mount sign-in UI
                 const mainContent = document.querySelector('main.container');
@@ -125,6 +129,9 @@
                 }
                 return;
             }
+
+            // User is authenticated
+            this.isAuthenticated = true;
 
             console.log('👤 User signed in:', Clerk.user.primaryEmailAddress?.emailAddress);
 
