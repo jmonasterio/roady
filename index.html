@@ -70,12 +70,24 @@
         <nav class="container-fluid">
             <ul>
                 <li><strong>Roady</strong></li>
+                <li x-show="!isLoading && isAuthenticated && userBands.length > 0">
+                    <a href="#" @click.prevent="currentView = 'settings'; settingsTab = 'myband'" 
+                       style="display: inline-flex; align-items: center; gap: 0.5rem;">
+                        <span x-text="currentBandName"></span>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: middle;">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                        </svg>
+                    </a>
+                </li>
             </ul>
             <ul x-show="!isLoading && isAuthenticated">
                 <li><a href="#" @click.prevent="currentView = 'gigs'"
                         :class="{ active: currentView === 'gigs' }">Gigs</a></li>
                 <li><a href="#" @click.prevent="currentView = 'settings'"
                         :class="{ active: currentView === 'settings' }">Settings</a></li>
+                <li><a href="#" @click.prevent="currentView = 'bands'"
+                        :class="{ active: currentView === 'bands' }">Bands</a></li>
                 <li x-show="options.couchDbUrl" style="opacity: 0.7; font-size: 0.85em;" x-text="getSyncStatusText()">
                 </li>
             </ul>
@@ -83,11 +95,35 @@
 
         <main class="container">
 
+            <!-- Create Band Dialog -->
+            <dialog :open="showCreateBandDialog">
+                <article style="display: flex; flex-direction: column; height: 100%;">
+                    <header style="display: flex; align-items: center; gap: 1rem;">
+                        <a href="#" @click.prevent="showCreateBandDialog = false"
+                            style="font-size: 1.5rem; text-decoration: none;">←</a>
+                        <h3 style="margin: 0;">Create New Band</h3>
+                    </header>
+                    <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                        <label>
+                            Band Name
+                            <input type="text" x-model="newBandName" 
+                                   placeholder="e.g., 'Blue Notes', 'Studio Sessions'"
+                                   @keyup.enter="createBand()" />
+                            <small class="text-muted">The name your band goes by</small>
+                        </label>
+                    </div>
+                    <footer style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+                        <button class="secondary outline" @click="showCreateBandDialog = false" style="margin: 0;">Cancel</button>
+                        <button @click="createBand()" :disabled="!newBandName.trim()" style="margin: 0;">Create Band</button>
+                    </footer>
+                </article>
+            </dialog>
+
             <!-- Gigs View (Primary) -->
             <div x-show="currentView === 'gigs'">
                 <hgroup>
                     <h2 x-text="isLoading ? 'Loading...' : 'Gigs'"></h2>
-                    <p x-show="!isLoading">Schedule and manage your gigs</p>
+                    <p x-show="!isLoading">Create gigs and track loading out and loading in for each show. Choose a template to auto-populate your checklist.</p>
                 </hgroup>
                 <div x-show="!isLoading" style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem;">
                     <button @click="openCreateGigDialog()">+ Create Gig</button>
@@ -419,14 +455,49 @@
                 </dialog>
             </div>
 
+            <!-- Bands View -->
+            <div x-show="currentView === 'bands'">
+                <hgroup>
+                    <h2>Your Bands</h2>
+                    <p x-text="userBands.length > 3 ? 'Showing your first 3 bands' : 'Manage your bands'"></p>
+                </hgroup>
+
+                <div style="display: flex; gap: 1rem; margin-bottom: 2rem;">
+                    <button @click="openCreateBandDialog()" x-show="userBands.length < 3">+ Create New Band</button>
+                    <p x-show="userBands.length >= 3" class="text-muted" style="margin: 0;">You have reached the band limit (3). Delete a band to create new ones.</p>
+                </div>
+
+                <!-- Bands List -->
+                <div style="display: grid; gap: 1rem;">
+                    <template x-for="band in userBands.slice(0, 3)" :key="band.tenantId">
+                        <article style="padding: 1.5rem; cursor: pointer; transition: all 0.2s;" 
+                                 @click="switchBand(band.tenantId)"
+                                 :style="band.tenantId === currentBandTenantId ? 'border: 2px solid var(--pico-primary, #5a67d8);' : 'border: 1px solid var(--pico-form-element-border-color);'">
+                            <div style="display: flex; justify-content: space-between; align-items: start; gap: 1rem;">
+                                <div style="flex: 1;">
+                                    <h4 x-text="band.bandName || band.name || 'Unnamed Band'" style="margin: 0;"></h4>
+                                    <p style="color: var(--pico-muted-color); margin: 0.5rem 0 0 0; font-size: 0.9rem;" x-text="band.role"></p>
+                                    <p x-show="band.memberCount" style="color: var(--pico-muted-color); margin: 0.25rem 0 0 0; font-size: 0.85rem;" x-text="band.memberCount + ' member' + (band.memberCount !== 1 ? 's' : '')"></p>
+                                </div>
+                                <span x-show="band.tenantId === currentBandTenantId" style="background: var(--pico-primary, #5a67d8); color: white; padding: 0.5rem 1rem; border-radius: 4px; font-size: 0.85em; white-space: nowrap;">Current</span>
+                            </div>
+                        </article>
+                    </template>
+                    <p x-show="userBands.length === 0" class="empty-state">No bands yet. Create your first band to get started.</p>
+                </div>
+            </div>
+
             <!-- Settings View (Admin/Setup) -->
-            <div x-show="currentView === 'settings'" x-data="{ settingsTab: 'equipment' }">
+            <div x-show="currentView === 'settings'" x-data="{ settingsTab: 'myband' }">
                 <hgroup>
                     <h2>Settings</h2>
                     <p>Manage your equipment catalog and templates</p>
                 </hgroup>
 
                 <div role="group" class="tab-buttons">
+                    <button @click="settingsTab = 'myband'" :class="settingsTab === 'myband' ? '' : 'outline'">
+                        My Band
+                    </button>
                     <button @click="settingsTab = 'equipment'" :class="settingsTab === 'equipment' ? '' : 'outline'">
                         Equipment Catalog
                     </button>
@@ -442,10 +513,74 @@
                     </button>
                 </div>
 
+                <!-- My Band Section -->
+                <section x-show="settingsTab === 'myband'">
+                    <h3>My Band</h3>
+                    <p class="text-muted">Edit your band information</p>
+
+                    <article style="margin-top: 1.5rem; padding: 1.5rem;">
+                        <label>
+                            Band Name
+                            <input type="text" x-model="bandBeingEdited.name" style="width: 100%;" />
+                        </label>
+                        <div x-show="bandBeingEdited.name !== bandNameOriginal" style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+                            <button @click="saveBandName()">Save Changes</button>
+                            <button @click="cancelBandEdit()" class="secondary outline">Cancel</button>
+                        </div>
+                    </article>
+
+                    <!-- Members Section -->
+                    <article style="margin-top: 1.5rem; padding: 1.5rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h4 style="margin: 0;">Members</h4>
+                            <button @click="showInviteMemberDialog = true" class="secondary outline">+ Invite</button>
+                        </div>
+
+                        <div class="members-list">
+                            <template x-for="member in currentBandMembers" :key="member.userId">
+                                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; border-bottom: 1px solid var(--pico-form-element-border-color);">
+                                    <div>
+                                        <strong x-text="member.email"></strong>
+                                        <p style="color: var(--pico-muted-color); margin: 0.25rem 0 0 0; font-size: 0.9rem;" x-text="member.role"></p>
+                                    </div>
+                                </div>
+                            </template>
+                            <p x-show="currentBandMembers.length === 0" class="text-muted" style="padding: 0.75rem 0;">No members yet. Invite team members to collaborate.</p>
+                        </div>
+                    </article>
+
+                    <!-- Invite Member Dialog -->
+                    <dialog x-show="showInviteMemberDialog">
+                        <article>
+                            <header>
+                                <button aria-label="Close" rel="prev" @click="showInviteMemberDialog = false" style="float: right;"></button>
+                                <h3>Invite Member</h3>
+                            </header>
+                            <input type="email" x-model="inviteMemberEmail" 
+                                   placeholder="Email address" />
+                            <label>
+                                Role
+                                <select x-model="inviteMemberRole">
+                                    <option value="member">Member</option>
+                                    <option value="admin">Admin</option>
+                                </select>
+                            </label>
+                            <footer>
+                                <button class="secondary" @click="showInviteMemberDialog = false">Cancel</button>
+                                <button @click="inviteBandMember()">Send Invite</button>
+                            </footer>
+                        </article>
+                    </dialog>
+                </section>
+
                 <!-- Equipment Section -->
                 <section x-show="settingsTab === 'equipment'">
-                    <div class="settings-section-header">
+                    <hgroup>
                         <h3>Equipment Catalog</h3>
+                        <p class="text-muted">Add all your gear: microphones, cables, amplifiers, drums, speakers, stands, lights, and more. Then assign items to templates for different gig types.</p>
+                    </hgroup>
+
+                    <div class="settings-section-header">
                         <button @click="showAddEquipment = true">+ Add Item</button>
                     </div>
 
@@ -492,8 +627,12 @@
 
                 <!-- Templates Section -->
                 <section x-show="settingsTab === 'templates'">
-                    <div class="settings-section-header">
+                    <hgroup>
                         <h3>Templates</h3>
+                        <p class="text-muted">Create equipment templates for different gig types. Examples: "Small Club", "Outdoor Festival", "Theater", "Studio Session". Choose a template when creating a gig to auto-populate your checklist.</p>
+                    </hgroup>
+
+                    <div class="settings-section-header">
                         <button @click="showAddGigType = true">+ Add Template</button>
                     </div>
 
@@ -725,7 +864,7 @@
             <div x-show="snackbar.isOpen"
                 style="position: fixed; bottom: 1rem; left: 1rem; right: 1rem; max-width: 400px; background: var(--pico-form-element-background-color); border: 1px solid var(--pico-form-element-border-color); border-radius: var(--pico-border-radius); padding: 1rem; display: flex; align-items: center; gap: 1rem; z-index: 1000; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
                 <span x-text="snackbar.message" style="flex: 1; font-size: 0.9rem;"></span>
-                <button @click="snackbarUndo()" class="secondary outline"
+                <button x-show="snackbar.action" @click="snackbarUndo()" class="secondary outline"
                     style="margin: 0; white-space: nowrap; padding: 0.375rem 0.75rem; font-size: 0.85rem;">
                     Undo
                 </button>

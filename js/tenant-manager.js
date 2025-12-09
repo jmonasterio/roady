@@ -163,6 +163,11 @@ class TenantManager {
             }
 
             try {
+                // Force Clerk to reload session from server to get updated metadata
+                if (window.Clerk.session?.reload) {
+                    await window.Clerk.session.reload();
+                }
+                
                 // Get a fresh token - Clerk should include updated metadata
                 const refreshedToken = await window.Clerk.session.getToken();
 

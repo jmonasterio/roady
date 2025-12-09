@@ -260,6 +260,42 @@ const DB = {
         const doc = await this.db.get(id);
         delete doc.deletedAt;
         return await this.db.put(doc);
+    },
+
+    // Band info operations
+    async getBandInfo() {
+        try {
+            const doc = await this.db.get('band-info');
+            // Verify it belongs to current tenant
+            if (doc.tenant === this.currentTenant) {
+                return doc;
+            }
+        } catch (err) {
+            if (err.status === 404) {
+                return null; // No band info yet
+            }
+            throw err;
+        }
+    },
+
+    async saveBandInfo(bandInfo) {
+        // Ensure tenant is set
+        bandInfo.tenant = this.currentTenant;
+        bandInfo.type = 'band-info';
+        
+        try {
+            // Try to get existing to preserve _rev
+            const existing = await this.db.get('band-info');
+            bandInfo._rev = existing._rev;
+        } catch (err) {
+            if (err.status !== 404) {
+                throw err;
+            }
+            // 404 is fine - it's a new doc
+        }
+        
+        bandInfo._id = 'band-info';
+        return await this.db.put(bandInfo);
     }
 };
 

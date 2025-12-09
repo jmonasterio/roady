@@ -27,6 +27,19 @@
         showTenantSelection: false,
         tenantIdInput: 'demo',
 
+        // Band state
+        userBands: [],
+        currentBandTenantId: null,
+        currentBandName: '',
+        showCreateBandDialog: false,
+        newBandName: '',
+        bandBeingEdited: { name: '' },
+        bandNameOriginal: '',
+        currentBandMembers: [],
+        showInviteMemberDialog: false,
+        inviteMemberEmail: '',
+        inviteMemberRole: 'member',
+
         // Authentication state
         isAuthenticated: false,
 
@@ -149,8 +162,7 @@
 
                 console.log('✅ Tenant Initialized:', tenant.name);
 
-                // Update UI with tenant info
-                this.updateTenantDisplay(tenant);
+                // Tenant initialized - band selector will display it
 
             } catch (e) {
                 console.error('❌ Tenant initialization failed:', e);
@@ -166,6 +178,12 @@
                 // Show tenant selection or error
             }
 
+            // Load user's bands
+            await this.loadBands();
+
+            // Load current band details
+            await this.loadBandDetails();
+
             await this.loadData();
             this.isLoading = false;
 
@@ -177,49 +195,6 @@
 
             // 6. Mount User Button
             this.mountUserButton();
-        },
-
-        updateTenantDisplay(tenant) {
-            const navBar = document.querySelector('nav.container-fluid');
-            if (!navBar) return;
-
-            // Remove existing tenant info if any
-            const existingInfo = document.getElementById('tenant-info-display');
-            if (existingInfo) existingInfo.remove();
-
-            // Create display
-            const tenantInfo = document.createElement('div');
-            tenantInfo.id = 'tenant-info-display';
-            tenantInfo.style.display = 'inline-block';
-            tenantInfo.style.marginRight = '1rem';
-            tenantInfo.style.padding = '0.5rem';
-            tenantInfo.style.background = 'var(--pico-primary, #5a67d8)';
-            tenantInfo.style.color = 'white';
-            tenantInfo.style.borderRadius = '4px';
-
-            let displayName = tenant.name;
-            if (tenant.personal && displayName.includes('for None')) {
-                const email = Clerk.user?.primaryEmailAddress?.emailAddress;
-                displayName = email ? `${email.split('@')[0]}'s Workspace` : 'Personal Workspace';
-            }
-
-            tenantInfo.innerHTML = `
-                <span style="font-weight: bold;">${displayName}</span>
-                ${tenant.personal ? '<small>(Personal)</small>' : ''}
-            `;
-
-            // Insert into nav
-            const userButton = document.getElementById('user-button-container');
-            if (userButton) {
-                userButton.parentNode.insertBefore(tenantInfo, userButton);
-            } else {
-                const navLists = navBar.querySelectorAll('ul');
-                if (navLists.length > 1) {
-                    const li = document.createElement('li');
-                    li.appendChild(tenantInfo);
-                    navLists[1].insertBefore(li, navLists[1].lastElementChild);
-                }
-            }
         },
 
         mountUserButton() {
@@ -1082,6 +1057,398 @@
                 clearTimeout(this.snackbar.timeout);
             }
             this.snackbar.isOpen = false;
+        },
+
+        // Band management methods
+        async loadBands() {
+            try {
+                // Get bands from tenantManager (already loaded during init)
+                if (!window.tenantManager) {
+                    console.error('❌ TenantManager not available');
+                    return;
+                }
+                
+                this.userBands = window.tenantManager.getTenantList();
+                console.log('✅ Bands loaded from tenantManager:', this.userBands);
+                
+                // Load band info document for each band to get proper band names
+                for (let band of this.userBands) {
+                    try {
+                        const currentTenant = DB.tenant;
+                        DB.setTenant(band.tenantId);
+                        
+                        const bandInfo = await DB.getBandInfo();
+                        if (bandInfo && bandInfo.name) {
+                            band.bandName = bandInfo.name;
+                        }
+                        
+                        // Try to get member count
+                        const token = await Clerk.session?.getToken();
+                        try {
+                            const membersResponse = await fetch(`http://localhost:5985/api/tenants/${band.tenantId}/members`, {
+                                headers: { 'Authorization': `Bearer ${token}` }
+                            });
+                            if (membersResponse.ok) {
+                                const data = await membersResponse.json();
+                                band.memberCount = (data.members || []).length;
+                            }
+                        } catch (e) {
+                            console.warn('Could not load member count for band:', band.tenantId);
+                        }
+                        
+                        // Restore original tenant
+                        if (currentTenant) {
+                            DB.setTenant(currentTenant);
+                        }
+                    } catch (e) {
+                        console.warn('Could not load band info for:', band.tenantId, e);
+                    }
+                }
+                
+                // Determine which band to select
+                // Priority: 1) Last selected band, 2) Current tenant from tenantManager, 3) First band
+                
+                const lastSelectedBandId = localStorage.getItem('lastSelectedBandId');
+                if (lastSelectedBandId && this.userBands.some(b => b.tenantId === lastSelectedBandId)) {
+                    // Use last selected band if it still exists
+                    this.currentBandTenantId = lastSelectedBandId;
+                    console.log('✅ Using last selected band:', lastSelectedBandId);
+                } else {
+                    // Fall back to current tenant or first band
+                    const currentTenant = window.tenantManager.getCurrentTenant();
+                    if (currentTenant) {
+                        this.currentBandTenantId = currentTenant.tenantId;
+                        console.log('✅ Using current tenant:', currentTenant.tenantId);
+                    } else if (this.userBands.length > 0) {
+                        this.currentBandTenantId = this.userBands[0].tenantId;
+                        console.log('✅ Using first band:', this.userBands[0].tenantId);
+                    }
+                }
+                
+                // Update current band name
+                this.updateCurrentBandName();
+            } catch (e) {
+                console.error('❌ Error loading bands:', e);
+            }
+        },
+
+        updateCurrentBandName() {
+            const currentBand = this.userBands.find(b => b.tenantId === this.currentBandTenantId);
+            this.currentBandName = currentBand?.name || 'My First Band';
+        },
+
+        async switchBand(bandTenantId) {
+            try {
+                console.log('🔄 Switching to band:', bandTenantId);
+                
+                // Switch tenant in tenantManager
+                if (window.tenantManager) {
+                    await window.tenantManager.switchTenant(bandTenantId);
+                }
+                
+                // Update app state
+                this.currentBandTenantId = bandTenantId;
+                this.updateCurrentBandName();
+                
+                // Set tenant in DB layer
+                DB.setTenant(bandTenantId);
+                
+                // Save last selected band to local storage
+                localStorage.setItem('lastSelectedBandId', bandTenantId);
+                
+                // Set as active tenant in Clerk metadata
+                try {
+                    const token = await Clerk.session?.getToken();
+                    if (token) {
+                        const chooseTenantResponse = await fetch(`http://localhost:5985/choose-tenant`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${token}`
+                            },
+                            body: JSON.stringify({ tenantId: bandTenantId })
+                        });
+                        if (!chooseTenantResponse.ok) {
+                            console.warn('Failed to set active tenant in Clerk:', chooseTenantResponse.status);
+                        } else {
+                            // CRITICAL: Reload session to sync the updated metadata from Clerk
+                            console.log('Reloading session to sync active_tenant_id from Clerk...');
+                            await Clerk.session?.reload();
+                            // Get a fresh token that includes the updated active_tenant_id claim
+                            const freshToken = await Clerk.session?.getToken({ force: true });
+                            console.log('Fresh token obtained with updated tenant claim');
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Error setting active tenant:', e);
+                }
+                
+                // Reload data for new band
+                await this.loadData();
+                
+                // Load band details for settings
+                await this.loadBandDetails();
+                
+                // Show notification
+                this.showSnackbar(`Switched to ${this.currentBandName}`);
+            } catch (e) {
+                console.error('❌ Error switching band:', e);
+                this.showSnackbar('Error switching band', 'error');
+            }
+        },
+
+        openCreateBandDialog() {
+            this.newBandName = '';
+            this.showCreateBandDialog = true;
+        },
+
+        async createBand() {
+            if (!this.newBandName.trim()) {
+                this.showSnackbar('Band name is required', 'error');
+                return;
+            }
+
+            try {
+                const token = await Clerk.session?.getToken();
+                if (!token) {
+                    console.error('No auth token available');
+                    this.showSnackbar('Authentication error: Please sign in again', 'error');
+                    return;
+                }
+                
+                console.log('Creating band with token:', token.substring(0, 20) + '...');
+                const response = await fetch('http://localhost:5985/api/tenants', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ name: this.newBandName })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    const newBandId = data.tenantId || data.id;
+                    
+                    this.showCreateBandDialog = false;
+                    const bandName = this.newBandName;
+                    this.newBandName = '';
+                    
+                    // Set as active tenant in Clerk metadata
+                    try {
+                        const chooseTenantResponse = await fetch(`http://localhost:5985/choose-tenant`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${token}`
+                            },
+                            body: JSON.stringify({ tenantId: newBandId })
+                        });
+                        if (!chooseTenantResponse.ok) {
+                            console.warn('Failed to set active tenant:', chooseTenantResponse.status);
+                        } else {
+                            // CRITICAL: Reload session to sync the updated metadata from Clerk
+                            console.log('Reloading session to sync active_tenant_id from Clerk...');
+                            await Clerk.session?.reload();
+                            // Get a fresh token that includes the updated active_tenant_id claim
+                            const freshToken = await Clerk.session?.getToken({ force: true });
+                            console.log('Fresh token obtained with updated tenant claim');
+                        }
+                    } catch (e) {
+                        console.warn('Error setting active tenant:', e);
+                    }
+                    
+                    // Reload bands list
+                    await this.loadBands();
+                    
+                    // Switch to new band
+                    await this.switchBand(newBandId);
+                    this.showSnackbar(`Created new band: ${bandName}`);
+                } else {
+                    let errorMsg = `Failed to create band (${response.status})`;
+                    try {
+                        const error = await response.json();
+                        errorMsg = error.message || errorMsg;
+                    } catch (e) {
+                        // Response wasn't JSON, use status message
+                    }
+                    console.error('Band creation error:', response.status, errorMsg);
+                    this.showSnackbar(errorMsg, 'error');
+                }
+            } catch (e) {
+                console.error('Error creating band:', e);
+                this.showSnackbar('Error creating band', 'error');
+            }
+        },
+
+        // Band settings methods
+        async loadBandDetails() {
+            if (!this.currentBandTenantId) return;
+            
+            try {
+                const bandInfo = await DB.getBandInfo();
+                if (bandInfo) {
+                    this.bandBeingEdited = { name: bandInfo.name };
+                    this.bandNameOriginal = bandInfo.name;
+                    this.currentBandName = bandInfo.name;
+                    console.log('✅ Band info loaded:', bandInfo);
+                } else {
+                    console.warn('⚠️ No band-info document found, using current band name');
+                    this.bandBeingEdited = { name: this.currentBandName };
+                    this.bandNameOriginal = this.currentBandName;
+                }
+            } catch (e) {
+                console.error('❌ Error loading band details:', e);
+            }
+            
+            await this.loadBandMembers();
+        },
+
+        async loadBandMembers() {
+            if (!this.currentBandTenantId) return;
+            
+            try {
+                const token = await Clerk.session?.getToken();
+                const response = await fetch(`http://localhost:5985/api/tenants/${this.currentBandTenantId}/members`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    this.currentBandMembers = data.members || [];
+                    console.log('✅ Band members loaded:', this.currentBandMembers);
+                } else {
+                    console.warn('⚠️ Failed to load band members');
+                    this.currentBandMembers = [];
+                }
+            } catch (e) {
+                console.error('❌ Error loading band members:', e);
+                this.currentBandMembers = [];
+            }
+        },
+
+        cancelBandEdit() {
+            this.bandBeingEdited = { name: this.bandNameOriginal };
+        },
+
+        async saveBandName() {
+            if (!this.bandBeingEdited.name.trim()) {
+                this.showSnackbar('Band name cannot be empty', 'error');
+                return;
+            }
+
+            try {
+                const bandInfo = {
+                    name: this.bandBeingEdited.name,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString()
+                };
+
+                // Save to database (DB.saveBandInfo handles create vs update)
+                await DB.saveBandInfo(bandInfo);
+                
+                // Update app state
+                this.currentBandName = this.bandBeingEdited.name;
+                
+                // Update in userBands list
+                const band = this.userBands.find(b => b.tenantId === this.currentBandTenantId);
+                if (band) {
+                    band.name = this.bandBeingEdited.name;
+                }
+                
+                this.bandNameOriginal = this.currentBandName;
+                this.showSnackbar(`Band renamed to ${this.currentBandName}`);
+            } catch (e) {
+                console.error('Error saving band name:', e);
+                this.showSnackbar('Error saving band name', 'error');
+            }
+        },
+
+        async inviteMember() {
+            if (!this.inviteMemberEmail.trim()) {
+                this.showSnackbar('Email address is required', 'error');
+                return;
+            }
+
+            try {
+                const token = await Clerk.session?.getToken();
+                const response = await fetch(`http://localhost:5985/api/tenants/${this.currentBandTenantId}/invitations`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ email: this.inviteMemberEmail, role: this.inviteMemberRole })
+                });
+
+                if (response.ok) {
+                    this.showInviteMemberDialog = false;
+                    this.inviteMemberEmail = '';
+                    this.inviteMemberRole = 'member';
+                    this.showSnackbar(`Invitation sent to ${this.inviteMemberEmail}`);
+                    
+                    // Reload band details
+                    await this.loadBandDetails();
+                } else {
+                    const error = await response.json();
+                    this.showSnackbar(`Failed to invite member: ${error.detail || 'Unknown error'}`, 'error');
+                }
+            } catch (e) {
+                console.error('Error inviting member:', e);
+                this.showSnackbar('Error inviting member', 'error');
+            }
+        },
+
+        openDeleteBandConfirmation() {
+            this.showConfirmation(
+                'Delete Band',
+                `Are you sure you want to delete "${this.currentBandName}"? This will permanently delete all equipment and gigs in this band. This action cannot be undone.`,
+                'Delete Band',
+                'Cancel',
+                async () => {
+                    await this.deleteBand();
+                },
+                true
+            );
+        },
+
+        async deleteBand() {
+            try {
+                // Delete via mycouch API (handled by separate effort)
+                const token = await Clerk.session?.getToken();
+                const response = await fetch(`http://localhost:5985/api/tenants/${this.currentBandTenantId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (response.ok || response.status === 204) {
+                    const deletedBandName = this.currentBandName;
+                    
+                    // Remove from userBands list
+                    this.userBands = this.userBands.filter(b => b.tenantId !== this.currentBandTenantId);
+                    
+                    // Switch to first available band
+                    if (this.userBands.length > 0) {
+                        this.currentBandTenantId = this.userBands[0].tenantId;
+                        this.updateCurrentBandName();
+                        DB.setTenant(this.userBands[0].tenantId);
+                        await this.loadData();
+                        await this.loadBandDetails();
+                    }
+                    
+                    this.showSnackbar(`Band "${deletedBandName}" has been deleted`);
+                } else {
+                    const error = await response.json();
+                    this.showSnackbar(`Failed to delete band: ${error.detail || 'Unknown error'}`, 'error');
+                }
+            } catch (e) {
+                console.error('Error deleting band:', e);
+                this.showSnackbar('Error deleting band', 'error');
+            }
         }
     }));
 });

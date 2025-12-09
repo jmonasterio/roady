@@ -51,46 +51,35 @@ Currently, users must understand the concept of "tenants" which is a backend arc
 
 ## Data Model
 
-### User Document
+### Band Info Document
+
+Each band has a `band-info` document stored within its tenant:
 
 ```javascript
 {
-  _id: "user_abc123",
-  type: "user",
-  userId: "abc123",           // Auth system user ID
-  name: "Alice",
-  email: "alice@example.com",
-  bandTenantIds: ["tenant_band1", "tenant_band2"],  // IDs of all bands user belongs to
-  primaryBandTenantId: "tenant_band1",              // Currently selected band
-  personalTenantId: "tenant_personal_abc123",       // Optional: personal/solo space
-  createdAt: "2025-01-15T10:30:00Z"
+  _id: "band-info",
+  type: "band-info",
+  tenant: "tenant_band_xyz789",
+  name: "My First Band",
+  createdAt: "2025-01-15T10:30:00Z",
+  updatedAt: "2025-01-15T10:30:00Z"
 }
 ```
 
-### Band Tenant Document
+### Tenant Document (Infrastructure)
 
-Each band is a tenant document:
+Tenants remain infrastructure only - multitenancy boundaries managed by mycouch:
 
 ```javascript
 {
   _id: "tenant_band_xyz789",
-  type: "tenant",
-  tenantId: "tenant_band_xyz789",
-  name: "My First Band",
-  ownerId: "abc123",                    // User who created the band
-  userIds: ["abc123"],                  // All users in this band
-  roles: {                              // User roles in this band
-    "abc123": "owner",
-    "def456": "editor"
-  },
-  isShared: true,                       // Always true for bands
-  createdAt: "2025-01-15T10:30:00Z"
+  // Managed by mycouch - owner, members, roles handled at tenant level
 }
 ```
 
 ### Equipment Document (Example)
 
-Documents in a band continue to include tenant field:
+Business data stored with tenant field:
 
 ```javascript
 {
@@ -123,88 +112,26 @@ Documents in a band continue to include tenant field:
 
 ### Database Layer (`js/db.js`)
 
-**New Properties:**
-```javascript
-currentBandTenantId: 'tenant_band_xyz789'  // Current band the user is working in
-userBandTenantIds: ['tenant_band_xyz789', 'tenant_band_abc123']  // All user's bands
-```
+**Leverage existing:**
+- `currentTenant` already tracks which band user is working in
+- `setTenant()` already handles switching between bands
 
-**New Methods:**
-```javascript
-setCurrentBand(bandTenantId) {
-    this.currentBandTenantId = bandTenantId;
-    console.log('Switched to band:', bandTenantId);
-}
-
-getAllUserBands() {
-    // Return list of bands user belongs to
-}
-
-createBand(bandName) {
-    // Create new band (new shared tenant)
-}
-
-updateBandName(bandTenantId, newName) {
-    // Rename a band
-}
-
-addBandMember(bandTenantId, userId, role) {
-    // Invite user to band
-}
-```
-
-**Updated Methods:**
-- All `get*` methods continue to filter by current band's tenant field
-- All `add*` methods continue to inject current band's tenant field
-- No changes to query logic—still uses tenant field for filtering
+**No DB layer changes needed:**
+- All `get*` methods already filter by `currentTenant`
+- All `add*` methods already inject `currentTenant`
+- Existing query logic continues to work
 
 ### App Layer (`js/app.js`)
 
 **On Init:**
-1. Load user's bands from user document
-2. Load primary band (currently selected)
-3. If first time user, create first band automatically
-4. Set DB layer's current band tenant
-5. Load data for current band
+1. Call `/my-tenants` to get user's bands (existing endpoint)
+2. If first time user, create first band via `/api/tenants/create`
+3. Set DB layer's current tenant with `setTenant()`
+4. Load data for current band
 
-```javascript
-async init() {
-    await this.loadUser();
-
-    // First time user: create first band
-    if (!this.user.bandTenantIds || this.user.bandTenantIds.length === 0) {
-        await this.createFirstBand();
-    }
-
-    // Set current band
-    this.currentBandTenantId = this.user.primaryBandTenantId;
-    DB.setCurrentBand(this.currentBandTenantId);
-
-    // Load data
-    await this.loadData();
-    this.setupSyncListeners();
-}
-
-async createFirstBand() {
-    const bandName = "My First Band";
-    const band = {
-        _id: 'tenant_band_' + Date.now(),
-        type: 'tenant',
-        name: bandName,
-        ownerId: this.user.userId,
-        userIds: [this.user.userId],
-        roles: { [this.user.userId]: 'owner' },
-        isShared: true,
-        createdAt: new Date().toISOString()
-    };
-    const result = await DB.put(band);
-    
-    // Update user document
-    this.user.bandTenantIds = [band._id];
-    this.user.primaryBandTenantId = band._id;
-    await DB.put(this.user);
-}
-```
+**Band Switching:**
+- Call `DB.setTenant(tenantId)` to switch bands
+- App re-renders with new band's data
 
 ### UI Changes
 
@@ -301,11 +228,70 @@ My Bands:
 3. She uses personal band for experimental setlists or personal notes
 4. Personal band remains separate and private (for future enhancement)
 
+## API Layer
+
+### Endpoint: POST /api/tenants
+
+Provided by mycouch backend (separate implementation effort).
+
+Roady will consume the /api/tenants endpoints for all band/tenant CRUD operations:
+
+```
+POST /api/tenants/create
+  - Create new band (shared tenant)
+  - Request: { name: "Band Name" }
+  - Response: { bandId, name, ownerId, createdAt }
+
+POST /api/tenants/list (or GET /api/tenants)
+  - List all bands for authenticated user
+  - Response: { bands: [...] }
+
+POST /api/tenants/:bandId/rename
+  - Rename band
+  - Request: { name: "New Name" }
+  - Response: { bandId, name }
+
+POST /api/tenants/:bandId/members
+  - Get band members
+  - Response: { members: [{ userId, name, role }, ...] }
+
+POST /api/tenants/:bandId/invite
+  - Invite user to band
+  - Request: { userId, role: "editor|viewer" }
+  - Response: { userId, role, invitedAt }
+
+POST /api/tenants/:bandId/delete
+  - Soft delete band (mark as deleted)
+  - Note: User must be owner
+  - Note: Cannot delete if band has other active members
+  - Response: { bandId, deletedAt, deletedBy }
+```
+
+**Note:** Authorization and soft delete enforcement handled by mycouch backend.
+
+### Soft Delete Strategy
+
+**All deletes are soft deletes** (marked as deleted, never hard-deleted):
+
+- Band document gets `deletedAt` timestamp and `deletedBy` user ID
+- Documents remain in database with delete markers
+- Queries exclude deleted documents by default
+- Deleted bands can be restored (future feature) or permanently archived
+- Historical data preserved for audit/recovery
+
+**Band Deletion Rules:**
+1. Only band owner can delete (enforced by mycouch)
+2. Cannot delete if other active members exist (enforced by mycouch)
+3. Mark band as deleted with timestamp
+4. Cascade: All equipment, gig types, gigs in band get soft-deleted too (enforced by mycouch)
+5. User's `bandTenantIds` is updated (removed from list)
+
 ## CouchDB Sync Implications
 
 - Same as multi-tenant approach: all bands' data in same `roady` database
 - Band documents (tenants) are stored alongside equipment, gigs, etc.
 - All documents continue to filter by tenant field
+- Deleted documents remain synced (with `deletedAt` marker)
 - No change to sync strategy or replication
 
 ## Future Enhancements
@@ -320,19 +306,31 @@ My Bands:
 
 ## Implementation Checklist
 
-- [ ] User model updated with `bandTenantIds` and `primaryBandTenantId`
-- [ ] Band tenant documents created (rename existing tenants)
-- [ ] First-time user flow creates automatic band
-- [ ] Database layer methods for band management
-- [ ] App layer band switching and creation
+**Data Model:**
+- [ ] Add `name`, `ownerId`, and `roles` fields to tenant documents
+- [ ] Existing equipment/gig documents already have `tenant` field—no changes
+
+**Backend API (mycouch - separate effort):**
+- /api/tenants endpoints for CRUD operations
+- Soft delete enforcement with cascade
+- Authorization checks (owner-only)
+
+**Client-Side:**
+- [ ] First-time user flow: call `/api/tenants/create` if no bands exist
+- [ ] App init: call `/my-tenants` and load bands
 - [ ] Band selector UI component
 - [ ] Create new band dialog
-- [ ] Settings/options band display
-- [ ] Documentation updated
+- [ ] Settings/options band display (name, members, delete)
+- [ ] Delete band confirmation (with warnings)
+
+**Quality & Docs:**
 - [ ] Migration script for existing users
+- [ ] Documentation updated
 - [ ] Testing: band isolation verified
 - [ ] Testing: multi-band switching works
 - [ ] Testing: new user gets first band automatically
+- [ ] Testing: soft delete cascades correctly
+- [ ] Testing: only owner can delete band
 
 ## Success Metrics
 
