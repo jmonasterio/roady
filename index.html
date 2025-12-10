@@ -84,6 +84,10 @@
             <ul x-show="!isLoading && isAuthenticated">
                 <li><a href="#" @click.prevent="currentView = 'gigs'"
                         :class="{ active: currentView === 'gigs' }">Gigs</a></li>
+                <li><a href="#" @click.prevent="currentView = 'equipment'; equipmentTab = 'catalog'"
+                        :class="{ active: currentView === 'equipment' && equipmentTab === 'catalog' }">Equipment</a></li>
+                <li><a href="#" @click.prevent="currentView = 'equipment'; equipmentTab = 'templates'"
+                        :class="{ active: currentView === 'equipment' && equipmentTab === 'templates' }">Templates</a></li>
                 <li><a href="#" @click.prevent="currentView = 'settings'"
                         :class="{ active: currentView === 'settings' }">Settings</a></li>
                 <li><a href="#" @click.prevent="currentView = 'bands'"
@@ -470,16 +474,23 @@
                 <!-- Bands List -->
                 <div style="display: grid; gap: 1rem;">
                     <template x-for="band in userBands.slice(0, 3)" :key="band.tenantId">
-                        <article style="padding: 1.5rem; cursor: pointer; transition: all 0.2s;" 
-                                 @click="switchBand(band.tenantId)"
+                        <article style="padding: 1.5rem; transition: all 0.2s;" 
                                  :style="band.tenantId === currentBandTenantId ? 'border: 2px solid var(--pico-primary, #5a67d8);' : 'border: 1px solid var(--pico-form-element-border-color);'">
-                            <div style="display: flex; justify-content: space-between; align-items: start; gap: 1rem;">
-                                <div style="flex: 1;">
-                                    <h4 x-text="band.bandName || band.name || 'Unnamed Band'" style="margin: 0;"></h4>
+                            <div style="display: flex; justify-content: space-between; align-items: start; gap: 1rem; margin-bottom: 1rem;">
+                                <div style="flex: 1; cursor: pointer;" @click="switchBand(band.tenantId)">
+                                    <h4 x-text="band.bandName" style="margin: 0;"></h4>
                                     <p style="color: var(--pico-muted-color); margin: 0.5rem 0 0 0; font-size: 0.9rem;" x-text="band.role"></p>
                                     <p x-show="band.memberCount" style="color: var(--pico-muted-color); margin: 0.25rem 0 0 0; font-size: 0.85rem;" x-text="band.memberCount + ' member' + (band.memberCount !== 1 ? 's' : '')"></p>
                                 </div>
                                 <span x-show="band.tenantId === currentBandTenantId" style="background: var(--pico-primary, #5a67d8); color: white; padding: 0.5rem 1rem; border-radius: 4px; font-size: 0.85em; white-space: nowrap;">Current</span>
+                            </div>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <button @click="switchBand(band.tenantId)" class="contrast" style="flex: 1; margin: 0;">Select Band</button>
+                                <button @click="openDeleteBandConfirmationForBand(band)" 
+                                        class="secondary outline" 
+                                        style="background: var(--pico-del-color, #c62828); color: white; margin: 0;">
+                                    Delete
+                                </button>
                             </div>
                         </article>
                     </template>
@@ -487,22 +498,144 @@
                 </div>
             </div>
 
+            <!-- Equipment View -->
+            <div x-show="currentView === 'equipment' && equipmentTab === 'catalog'">
+                <hgroup>
+                    <h2>Equipment Catalog</h2>
+                    <p>Manage all your gear: microphones, cables, amplifiers, drums, speakers, stands, lights, and more</p>
+                </hgroup>
+
+                <hgroup>
+                    <h3>Add Equipment Items</h3>
+                    <p class="text-muted">Add each piece of gear you bring to gigs, then assign them to templates for different gig types.</p>
+                </hgroup>
+
+                    <div class="settings-section-header">
+                        <button @click="showAddEquipment = true">+ Add Item</button>
+                    </div>
+
+                    <dialog :open="showAddEquipment || editingEquipment">
+                        <article style="display: flex; flex-direction: column; height: 100%;">
+                            <header style="display: flex; align-items: center; gap: 1rem;">
+                                <a href="#" @click.prevent="cancelEquipmentEdit()"
+                                    style="font-size: 1.5rem; text-decoration: none;">←</a>
+                                <h3 style="margin: 0;"
+                                    x-text="editingEquipment ? 'Edit Equipment Item' : 'Add Equipment Item'"></h3>
+                            </header>
+                            <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                                <input type="text" x-model="newEquipment.name"
+                                    placeholder="Item name (e.g., 'Shure SM58 Mic')" />
+                                <textarea x-model="newEquipment.description"
+                                    placeholder="Description or notes (optional)"></textarea>
+                            </div>
+                            <footer
+                                style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                                <button x-show="editingEquipment"
+                                    @click="deleteEquipment(editingEquipment._id); cancelEquipmentEdit()"
+                                    class="secondary outline"
+                                    style="background: var(--pico-del-color, #c0392b); color: white; margin: 0;">Delete</button>
+                                <button @click="saveEquipment()" style="margin: 0;">Save</button>
+                            </footer>
+                        </article>
+                    </dialog>
+
+                    <div class="equipment-list">
+                        <template x-for="item in equipment" :key="item._id">
+                            <article class="equipment-item">
+                                <div>
+                                    <strong x-text="item.name"></strong>
+                                    <p x-text="item.description" class="text-muted"></p>
+                                </div>
+                                <button @click="editEquipment(item)" class="contrast">Edit</button>
+                            </article>
+                        </template>
+                        <p x-show="equipment.length === 0" class="empty-state">No equipment yet. Add items for each
+                            piece of gear you bring to gigs (mics, cables, amps, etc.), then assign them to templates.
+                        </p>
+                    </div>
+            </div>
+
+            <!-- Templates View -->
+            <div x-show="currentView === 'equipment' && equipmentTab === 'templates'">
+                <hgroup>
+                    <h2>Templates</h2>
+                    <p>Create equipment templates for different gig types. Examples: "Small Club", "Outdoor Festival", "Theater", "Studio Session". Choose a template when creating a gig to auto-populate your checklist.</p>
+                </hgroup>
+
+                    <div class="settings-section-header">
+                        <button @click="showAddGigType = true">+ Add Template</button>
+                    </div>
+
+                    <dialog :open="showAddGigType || editingGigType">
+                        <article style="display: flex; flex-direction: column; height: 100%;">
+                            <header style="display: flex; align-items: center; gap: 1rem;">
+                                <a href="#" @click.prevent="cancelGigTypeEdit()"
+                                    style="font-size: 1.5rem; text-decoration: none;">←</a>
+                                <h3 style="margin: 0;" x-text="editingGigType ? 'Edit Template' : 'Add Template'"></h3>
+                            </header>
+                            <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                                <input type="text" x-model="newGigType.name"
+                                    placeholder="Template name (e.g., 'Small Venue', 'Festival')" />
+                                <fieldset class="equipment-selector">
+                                    <legend>Select Equipment for This Template</legend>
+                                    <template x-for="item in equipment" :key="item._id">
+                                        <div class="equipment-quantity-row">
+                                            <label style="flex: 1; margin: 0;">
+                                                <input type="checkbox"
+                                                    :checked="newGigType.equipment.some(e => e.equipmentId === item._id)"
+                                                    @change="toggleEquipmentInTemplate(item._id)" />
+                                                <span x-text="item.name"></span>
+                                            </label>
+                                            <div x-show="newGigType.equipment.some(e => e.equipmentId === item._id)"
+                                                style="display: flex; align-items: center; gap: 0.5rem;">
+                                                <label style="margin: 0; font-size: 0.9rem;">Qty:</label>
+                                                <input type="number" min="1" max="99"
+                                                    style="width: 60px; padding: 0.25rem 0.5rem;"
+                                                    :value="(newGigType.equipment.find(e => e.equipmentId === item._id) || {}).quantity || 1"
+                                                    @input="updateEquipmentQuantity(item._id, $event.target.value)" />
+                                            </div>
+                                        </div>
+                                    </template>
+                                </fieldset>
+                            </div>
+                            <footer
+                                style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                                <button x-show="editingGigType"
+                                    @click="deleteGigType(editingGigType._id); cancelGigTypeEdit()"
+                                    class="secondary outline"
+                                    style="background: var(--pico-del-color, #c0392b); color: white; margin: 0;">Delete</button>
+                                <button @click="saveGigType()" style="margin: 0;">Save</button>
+                            </footer>
+                        </article>
+                    </dialog>
+
+                    <div class="equipment-list">
+                        <template x-for="gigType in gigTypes" :key="gigType._id">
+                            <article class="equipment-item">
+                                <div>
+                                    <strong x-text="gigType.name"></strong>
+                                    <p class="text-muted" style="margin: 0.25rem 0 0 0;"
+                                        x-text="gigType.equipment.length + ' item' + (gigType.equipment.length !== 1 ? 's' : '')"></p>
+                                </div>
+                                <button @click="editGigType(gigType)" class="contrast">Edit</button>
+                            </article>
+                        </template>
+                        <p x-show="gigTypes.length === 0" class="empty-state">No templates yet. Create templates to
+                            auto-populate checklists for different gig types.
+                        </p>
+                    </div>
+            </div>
+
             <!-- Settings View (Admin/Setup) -->
             <div x-show="currentView === 'settings'" x-data="{ settingsTab: 'myband' }">
                 <hgroup>
                     <h2>Settings</h2>
-                    <p>Manage your equipment catalog and templates</p>
+                    <p>Manage your band information and settings</p>
                 </hgroup>
 
                 <div role="group" class="tab-buttons">
                     <button @click="settingsTab = 'myband'" :class="settingsTab === 'myband' ? '' : 'outline'">
                         My Band
-                    </button>
-                    <button @click="settingsTab = 'equipment'" :class="settingsTab === 'equipment' ? '' : 'outline'">
-                        Equipment Catalog
-                    </button>
-                    <button @click="settingsTab = 'templates'" :class="settingsTab === 'templates' ? '' : 'outline'">
-                        Templates
                     </button>
                     <button @click="settingsTab = 'options'" :class="settingsTab === 'options' ? '' : 'outline'">
                         Options
@@ -571,128 +704,6 @@
                             </footer>
                         </article>
                     </dialog>
-                </section>
-
-                <!-- Equipment Section -->
-                <section x-show="settingsTab === 'equipment'">
-                    <hgroup>
-                        <h3>Equipment Catalog</h3>
-                        <p class="text-muted">Add all your gear: microphones, cables, amplifiers, drums, speakers, stands, lights, and more. Then assign items to templates for different gig types.</p>
-                    </hgroup>
-
-                    <div class="settings-section-header">
-                        <button @click="showAddEquipment = true">+ Add Item</button>
-                    </div>
-
-                    <dialog :open="showAddEquipment || editingEquipment">
-                        <article style="display: flex; flex-direction: column; height: 100%;">
-                            <header style="display: flex; align-items: center; gap: 1rem;">
-                                <a href="#" @click.prevent="cancelEquipmentEdit()"
-                                    style="font-size: 1.5rem; text-decoration: none;">←</a>
-                                <h3 style="margin: 0;"
-                                    x-text="editingEquipment ? 'Edit Equipment Item' : 'Add Equipment Item'"></h3>
-                            </header>
-                            <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
-                                <input type="text" x-model="newEquipment.name"
-                                    placeholder="Item name (e.g., 'Shure SM58 Mic')" />
-                                <textarea x-model="newEquipment.description"
-                                    placeholder="Description or notes (optional)"></textarea>
-                            </div>
-                            <footer
-                                style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
-                                <button x-show="editingEquipment"
-                                    @click="deleteEquipment(editingEquipment._id); cancelEquipmentEdit()"
-                                    class="secondary outline"
-                                    style="background: var(--pico-del-color, #c0392b); color: white; margin: 0;">Delete</button>
-                                <button @click="saveEquipment()" style="margin: 0;">Save</button>
-                            </footer>
-                        </article>
-                    </dialog>
-
-                    <div class="equipment-list">
-                        <template x-for="item in equipment" :key="item._id">
-                            <article class="equipment-item">
-                                <div>
-                                    <strong x-text="item.name"></strong>
-                                    <p x-text="item.description" class="text-muted"></p>
-                                </div>
-                                <button @click="editEquipment(item)" class="contrast">Edit</button>
-                            </article>
-                        </template>
-                        <p x-show="equipment.length === 0" class="empty-state">No equipment yet. Add items for each
-                            piece of gear you bring to gigs (mics, cables, amps, etc.), then assign them to templates.
-                        </p>
-                    </div>
-                </section>
-
-                <!-- Templates Section -->
-                <section x-show="settingsTab === 'templates'">
-                    <hgroup>
-                        <h3>Templates</h3>
-                        <p class="text-muted">Create equipment templates for different gig types. Examples: "Small Club", "Outdoor Festival", "Theater", "Studio Session". Choose a template when creating a gig to auto-populate your checklist.</p>
-                    </hgroup>
-
-                    <div class="settings-section-header">
-                        <button @click="showAddGigType = true">+ Add Template</button>
-                    </div>
-
-                    <dialog :open="showAddGigType || editingGigType">
-                        <article style="display: flex; flex-direction: column; height: 100%;">
-                            <header style="display: flex; align-items: center; gap: 1rem;">
-                                <a href="#" @click.prevent="cancelGigTypeEdit()"
-                                    style="font-size: 1.5rem; text-decoration: none;">←</a>
-                                <h3 style="margin: 0;" x-text="editingGigType ? 'Edit Template' : 'Add Template'"></h3>
-                            </header>
-                            <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
-                                <input type="text" x-model="newGigType.name"
-                                    placeholder="Template name (e.g., 'Small Venue', 'Festival')" />
-                                <fieldset class="equipment-selector">
-                                    <legend>Select Equipment for This Template</legend>
-                                    <template x-for="item in equipment" :key="item._id">
-                                        <div class="equipment-quantity-row">
-                                            <label style="flex: 1; margin: 0;">
-                                                <input type="checkbox"
-                                                    :checked="newGigType.equipment.some(e => e.equipmentId === item._id)"
-                                                    @change="toggleEquipmentInTemplate(item._id)" />
-                                                <span x-text="item.name"></span>
-                                            </label>
-                                            <div x-show="newGigType.equipment.some(e => e.equipmentId === item._id)"
-                                                style="display: flex; align-items: center; gap: 0.5rem;">
-                                                <label style="margin: 0; font-size: 0.9rem;">Qty:</label>
-                                                <input type="number" min="1" max="99"
-                                                    style="width: 60px; padding: 0.25rem 0.5rem;"
-                                                    :value="(newGigType.equipment.find(e => e.equipmentId === item._id) || {}).quantity || 1"
-                                                    @input="updateEquipmentQuantity(item._id, $event.target.value)" />
-                                            </div>
-                                        </div>
-                                    </template>
-                                </fieldset>
-                            </div>
-                            <footer
-                                style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
-                                <button x-show="editingGigType" @click="deleteGigType(editingGigType._id)"
-                                    class="secondary outline"
-                                    style="background: var(--pico-del-color, #c0392b); color: white; margin: 0;">Delete</button>
-                                <button @click="saveGigType" style="margin: 0;">Save</button>
-                            </footer>
-                        </article>
-                    </dialog>
-
-                    <div class="gigtype-list">
-                        <template x-for="type in gigTypes" :key="type._id">
-                            <article class="gigtype-item">
-                                <div>
-                                    <strong x-text="type.name"></strong>
-                                    <p x-text="getEquipmentCount(type) + ' items'" class="text-muted"></p>
-                                </div>
-                                <div class="button-group">
-                                    <button @click="editGigType(type)" class="contrast">Edit</button>
-                                </div>
-                            </article>
-                        </template>
-                        <p x-show="gigTypes.length === 0" class="empty-state">No templates yet. Create templates for
-                            different equipment configurations, like "Small Club", "Outdoor Festival", or "Theater".</p>
-                    </div>
                 </section>
 
                 <!-- Options Section -->

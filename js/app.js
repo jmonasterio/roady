@@ -3,6 +3,7 @@
     Alpine.data('roady', () => ({
         // State
         currentView: 'gigs',
+        equipmentTab: 'catalog', // 'catalog' or 'templates'
         equipment: [],
         gigTypes: [],
         gigs: [],
@@ -166,7 +167,8 @@
 
             } catch (e) {
                 console.error('❌ Tenant initialization failed:', e);
-                // Continue anyway, maybe we have cached options
+                console.warn('⚠️ Continuing in offline mode - MyCouch may be unavailable');
+                // Continue anyway with cached data - user can work offline
             }
 
             // 4. Load Options and Data
@@ -180,6 +182,16 @@
 
             // Load user's bands
             await this.loadBands();
+
+            // If loadBands failed (offline), try to restore last selected band from localStorage
+            if (!this.currentBandTenantId) {
+                const lastSelectedBandId = localStorage.getItem('lastSelectedBandId');
+                if (lastSelectedBandId) {
+                    console.log('📚 Restored last selected band from localStorage:', lastSelectedBandId);
+                    this.currentBandTenantId = lastSelectedBandId;
+                    DB.setTenant(lastSelectedBandId);
+                }
+            }
 
             // Load current band details
             await this.loadBandDetails();
@@ -1062,14 +1074,16 @@
         // Band management methods
         async loadBands() {
             try {
-                // Get bands from tenantManager (already loaded during init)
+                // Refresh tenant list from server (not cached)
                 if (!window.tenantManager) {
                     console.error('❌ TenantManager not available');
                     return;
                 }
                 
-                this.userBands = window.tenantManager.getTenantList();
-                console.log('✅ Bands loaded from tenantManager:', this.userBands);
+                // Reload tenants from server to get latest (including newly created bands)
+                const tenantsResponse = await window.tenantManager.getMyTenants();
+                this.userBands = tenantsResponse.tenants || [];
+                console.log('✅ Bands refreshed from server:', this.userBands);
                 
                 // Load band info document for each band to get proper band names
                 for (let band of this.userBands) {
@@ -1080,21 +1094,12 @@
                         const bandInfo = await DB.getBandInfo();
                         if (bandInfo && bandInfo.name) {
                             band.bandName = bandInfo.name;
+                            console.log(`✅ Loaded band-info for ${band.tenantId}: "${bandInfo.name}"`);
+                        } else {
+                            console.warn(`⚠️ No band-info found for ${band.tenantId}`);
                         }
                         
-                        // Try to get member count
-                        const token = await Clerk.session?.getToken();
-                        try {
-                            const membersResponse = await fetch(`http://localhost:5985/api/tenants/${band.tenantId}/members`, {
-                                headers: { 'Authorization': `Bearer ${token}` }
-                            });
-                            if (membersResponse.ok) {
-                                const data = await membersResponse.json();
-                                band.memberCount = (data.members || []).length;
-                            }
-                        } catch (e) {
-                            console.warn('Could not load member count for band:', band.tenantId);
-                        }
+                        // Member count comes from /my-tenants response, no need to fetch separately
                         
                         // Restore original tenant
                         if (currentTenant) {
@@ -1134,7 +1139,8 @@
 
         updateCurrentBandName() {
             const currentBand = this.userBands.find(b => b.tenantId === this.currentBandTenantId);
-            this.currentBandName = currentBand?.name || 'My First Band';
+            // Band-info is always the source of truth
+            this.currentBandName = currentBand?.bandName || '';
         },
 
         async switchBand(bandTenantId) {
@@ -1217,7 +1223,7 @@
                 }
                 
                 console.log('Creating band with token:', token.substring(0, 20) + '...');
-                const response = await fetch('http://localhost:5985/api/tenants', {
+                const response = await fetch('http://localhost:5985/my-tenants', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1233,6 +1239,31 @@
                     this.showCreateBandDialog = false;
                     const bandName = this.newBandName;
                     this.newBandName = '';
+                    
+                    // Create band-info document in the new tenant
+                    try {
+                        const currentTenant = DB.tenant;
+                        DB.setTenant(newBandId);
+                        await DB.saveBandInfo({ name: bandName });
+                        console.log('✅ Created band-info document for:', newBandId);
+                        if (currentTenant) {
+                            DB.setTenant(currentTenant);
+                        }
+                    } catch (e) {
+                        console.error('❌ Failed to create band-info:', e);
+                    }
+                    
+                    // Immediately add new band to local list to avoid race condition
+                    const newBand = {
+                        tenantId: newBandId,
+                        name: data.name || bandName,
+                        bandName: bandName,
+                        role: 'owner',
+                        personal: false,
+                        memberCount: 1
+                    };
+                    this.userBands.push(newBand);
+                    console.log('✅ Added new band to local list:', newBand);
                     
                     // Set as active tenant in Clerk metadata
                     try {
@@ -1258,8 +1289,9 @@
                         console.warn('Error setting active tenant:', e);
                     }
                     
-                    // Reload bands list
-                    await this.loadBands();
+                    // Reload bands list in background (no await to avoid delay)
+                    // This will refresh with server data and sync any changes
+                    this.loadBands().catch(e => console.error('Background band reload failed:', e));
                     
                     // Switch to new band
                     await this.switchBand(newBandId);
@@ -1305,26 +1337,13 @@
         },
 
         async loadBandMembers() {
-            if (!this.currentBandTenantId) return;
-            
-            try {
-                const token = await Clerk.session?.getToken();
-                const response = await fetch(`http://localhost:5985/api/tenants/${this.currentBandTenantId}/members`, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-
-                if (response.ok) {
-                    const data = await response.json();
-                    this.currentBandMembers = data.members || [];
-                    console.log('✅ Band members loaded:', this.currentBandMembers);
-                } else {
-                    console.warn('⚠️ Failed to load band members');
-                    this.currentBandMembers = [];
-                }
-            } catch (e) {
-                console.error('❌ Error loading band members:', e);
+            // Members are already loaded in /my-tenants response
+            // Get members from currentBandInfo if available
+            const bandInfo = this.userBands.find(b => b.tenantId === this.currentBandTenantId);
+            if (bandInfo && bandInfo.members) {
+                this.currentBandMembers = bandInfo.members;
+                console.log('✅ Band members loaded from /my-tenants:', this.currentBandMembers);
+            } else {
                 this.currentBandMembers = [];
             }
         },
@@ -1374,13 +1393,13 @@
 
             try {
                 const token = await Clerk.session?.getToken();
-                const response = await fetch(`http://localhost:5985/api/tenants/${this.currentBandTenantId}/invitations`, {
+                const response = await fetch(`http://localhost:5985/invite`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${token}`
                     },
-                    body: JSON.stringify({ email: this.inviteMemberEmail, role: this.inviteMemberRole })
+                    body: JSON.stringify({ email: this.inviteMemberEmail, role: this.inviteMemberRole, tenantId: this.currentBandTenantId })
                 });
 
                 if (response.ok) {
@@ -1401,24 +1420,48 @@
             }
         },
 
-        openDeleteBandConfirmation() {
-            this.showConfirmation(
+        async openDeleteBandConfirmationForBand(band) {
+            // Get the band name directly from the band object passed to us
+            const bandNameToDelete = band.bandName || 'Unknown Band';
+            
+            // Set the band to delete
+            this.currentBandTenantId = band.tenantId;
+            
+            const confirmed = await this.showConfirmation(
+                'Delete Band',
+                `Are you sure you want to delete "${bandNameToDelete}"? This will permanently delete all equipment and gigs in this band. This action cannot be undone.`,
+                'Delete Band',
+                true
+            );
+            
+            if (confirmed) {
+                await this.deleteBand();
+            }
+        },
+
+        async openDeleteBandConfirmation() {
+            const confirmed = await this.showConfirmation(
                 'Delete Band',
                 `Are you sure you want to delete "${this.currentBandName}"? This will permanently delete all equipment and gigs in this band. This action cannot be undone.`,
                 'Delete Band',
-                'Cancel',
-                async () => {
-                    await this.deleteBand();
-                },
                 true
             );
+            
+            if (confirmed) {
+                await this.deleteBand();
+            }
         },
 
         async deleteBand() {
             try {
-                // Delete via mycouch API (handled by separate effort)
+                // Capture band name before deletion
+                const bandToDelete = this.userBands.find(b => b.tenantId === this.currentBandTenantId);
+                const deletedBandName = bandToDelete?.bandName || bandToDelete?.name || 'Unknown Band';
+                
+                // Delete via /my-tenant endpoint
+                // Backend must verify: user owns the tenant AND no other members in the band
                 const token = await Clerk.session?.getToken();
-                const response = await fetch(`http://localhost:5985/api/tenants/${this.currentBandTenantId}`, {
+                const response = await fetch(`http://localhost:5985/my-tenant/${this.currentBandTenantId}`, {
                     method: 'DELETE',
                     headers: {
                         'Authorization': `Bearer ${token}`
@@ -1426,8 +1469,6 @@
                 });
 
                 if (response.ok || response.status === 204) {
-                    const deletedBandName = this.currentBandName;
-                    
                     // Remove from userBands list
                     this.userBands = this.userBands.filter(b => b.tenantId !== this.currentBandTenantId);
                     

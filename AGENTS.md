@@ -77,3 +77,12 @@ bd automatically keeps git in sync:
 - No manual export/import needed!
 
 Disable with: `--no-auto-flush` or `--no-auto-import`
+
+## Git Workflow
+
+**Do NOT automatically commit changes.** Always leave git commits for the user to review and perform manually. Changes made during work should be staged and ready but not committed unless explicitly requested.
+
+This ensures:
+- User has control over commit history and messages
+- Changes can be reviewed before committing
+- Prevents accidental commits of incomplete work

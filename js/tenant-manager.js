@@ -87,13 +87,21 @@ class TenantManager {
         });
 
         try {
-            console.log('📡 Calling fetch...');
+            console.log('📡 Calling fetch (2s timeout)...');
+            
+            // Use AbortController for timeout
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2000); // 2 second timeout
+            
             const response = await fetch(url, {
                 headers: {
                     'Authorization': `Bearer ${jwt}`,
                     'Content-Type': 'application/json'
-                }
+                },
+                signal: controller.signal
             });
+            clearTimeout(timeoutId);
+            
             console.log('📡 Fetch completed, status:', response.status);
 
             if (!response.ok) {
