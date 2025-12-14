@@ -35,23 +35,7 @@ window.ClerkAuth = {
                 return null;
             }
 
-            // Debug: Log token info (but not the full token for security)
-            console.log('🔑 JWT Token obtained:', {
-                length: jwt.length,
-                startsWith: jwt.substring(0, 20) + '...',
-                hasTenant: jwt.includes('tenant') || jwt.includes('azp') || jwt.includes('sub')
-            });
 
-            // Try to decode the JWT payload to see what's in it
-            try {
-                const parts = jwt.split('.');
-                if (parts.length === 3) {
-                    const payload = JSON.parse(atob(parts[1]));
-                    console.log('🔍 JWT Payload:', payload);
-                }
-            } catch (e) {
-                console.warn('Could not decode JWT payload:', e);
-            }
 
             return jwt;
         } catch (err) {

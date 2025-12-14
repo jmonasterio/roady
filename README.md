@@ -8,6 +8,8 @@ Equipment checklist management for band roadies and touring professionals.
 - **[Database Design](docs/database-design.md)** - Schema and architecture
 - **[Terminology](docs/terminology.md)** - Glossary of terms
 - **[Agent Guide](docs/agent.md)** - Developer/AI agent guidance
+- **[Virtual Tables Migration](VIRTUAL_TABLES_MIGRATION.md)** - MyCouch endpoint updates (NEW)
+- **[MyCouch API Docs](../mycouch/docs/VIRTUAL_TABLES_API.md)** - Complete API reference
 
 ## Quick Start
 
@@ -35,7 +37,9 @@ npx browser-sync start --server --files "**/*.html, **/*.css, **/*.js"
 
 2. Open browser to `http://localhost:8000`
 
-## Clerk Configuration
+## Multi-Tenancy & Clerk Configuration
+
+Roady supports multi-tenant deployments with MyCouch proxy handling user/tenant management via virtual table endpoints.
 
 ### JWT Configuration
 
@@ -61,6 +65,17 @@ Roady requires the `active_tenant_id` claim in the session token to support mult
 5. **Save** the changes
 
 > **Note**: This configuration ensures that `window.Clerk.session.getToken()` automatically includes the tenant ID without needing a specific template name.
+
+### Multi-Tenant System
+
+Roady uses a personal tenant system managed by MyCouch:
+
+1. **First Login**: New user automatically gets a personal tenant (e.g., "John's Workspace")
+2. **Tenant Switching**: Users can switch between owned/joined tenants
+3. **Tenant Access**: Equipment data is isolated per active tenant
+4. **PouchDB Sync**: Data syncs to MyCouch `roady` database with tenant isolation
+
+For details, see [Virtual Tables Migration](VIRTUAL_TABLES_MIGRATION.md).
 
 
 ## Tech Stack

@@ -463,29 +463,29 @@
             <div x-show="currentView === 'bands'">
                 <hgroup>
                     <h2>Your Bands</h2>
-                    <p x-text="userBands.length > 3 ? 'Showing your first 3 bands' : 'Manage your bands'"></p>
+                    <p>Manage your bands</p>
                 </hgroup>
 
                 <div style="display: flex; gap: 1rem; margin-bottom: 2rem;">
-                    <button @click="openCreateBandDialog()" x-show="userBands.length < 3">+ Create New Band</button>
-                    <p x-show="userBands.length >= 3" class="text-muted" style="margin: 0;">You have reached the band limit (3). Delete a band to create new ones.</p>
+                    <button @click="openCreateBandDialog()">+ Create New Band</button>
                 </div>
 
                 <!-- Bands List -->
                 <div style="display: grid; gap: 1rem;">
-                    <template x-for="band in userBands.slice(0, 3)" :key="band.tenantId">
+                    <template x-for="band in userBands" :key="band._id">
                         <article style="padding: 1.5rem; transition: all 0.2s;" 
-                                 :style="band.tenantId === currentBandTenantId ? 'border: 2px solid var(--pico-primary, #5a67d8);' : 'border: 1px solid var(--pico-form-element-border-color);'">
+                                 :style="band._id === currentBandTenantId ? 'border: 2px solid var(--pico-primary, #5a67d8);' : 'border: 1px solid var(--pico-form-element-border-color);'">
                             <div style="display: flex; justify-content: space-between; align-items: start; gap: 1rem; margin-bottom: 1rem;">
-                                <div style="flex: 1; cursor: pointer;" @click="switchBand(band.tenantId)">
+                                <div style="flex: 1; cursor: pointer;" @click="switchBand(band._id)">
                                     <h4 x-text="band.bandName" style="margin: 0;"></h4>
+                                    <p style="color: var(--pico-muted-color); margin: 0.5rem 0 0 0; font-size: 0.75rem; font-family: monospace;" x-text="band._id"></p>
                                     <p style="color: var(--pico-muted-color); margin: 0.5rem 0 0 0; font-size: 0.9rem;" x-text="band.role"></p>
                                     <p x-show="band.memberCount" style="color: var(--pico-muted-color); margin: 0.25rem 0 0 0; font-size: 0.85rem;" x-text="band.memberCount + ' member' + (band.memberCount !== 1 ? 's' : '')"></p>
                                 </div>
-                                <span x-show="band.tenantId === currentBandTenantId" style="background: var(--pico-primary, #5a67d8); color: white; padding: 0.5rem 1rem; border-radius: 4px; font-size: 0.85em; white-space: nowrap;">Current</span>
+                                <span x-show="band._id === currentBandTenantId" style="background: var(--pico-primary, #5a67d8); color: white; padding: 0.5rem 1rem; border-radius: 4px; font-size: 0.85em; white-space: nowrap;">Current</span>
                             </div>
                             <div style="display: flex; gap: 0.5rem;">
-                                <button @click="switchBand(band.tenantId)" class="contrast" style="flex: 1; margin: 0;">Select Band</button>
+                                <button @click="switchBand(band._id)" class="contrast" style="flex: 1; margin: 0;">Select Band</button>
                                 <button @click="openDeleteBandConfirmationForBand(band)" 
                                         class="secondary outline" 
                                         style="background: var(--pico-del-color, #c62828); color: white; margin: 0;">
@@ -615,7 +615,7 @@
                                 <div>
                                     <strong x-text="gigType.name"></strong>
                                     <p class="text-muted" style="margin: 0.25rem 0 0 0;"
-                                        x-text="gigType.equipment.length + ' item' + (gigType.equipment.length !== 1 ? 's' : '')"></p>
+                                        x-text="(gigType.equipment?.length || 0) + ' item' + ((gigType.equipment?.length || 0) !== 1 ? 's' : '')"></p>
                                 </div>
                                 <button @click="editGigType(gigType)" class="contrast">Edit</button>
                             </article>

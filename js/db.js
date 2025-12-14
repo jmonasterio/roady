@@ -265,14 +265,28 @@ const DB = {
     // Band info operations
     async getBandInfo() {
         try {
-            const doc = await this.db.get('band-info');
-            // Verify it belongs to current tenant
-            if (doc.tenant === this.currentTenant) {
-                return doc;
-            }
+            // Use tenant-specific ID to avoid conflicts between bands
+            const docId = `band-info_${this.currentTenant}`;
+            const doc = await this.db.get(docId);
+            return doc;
         } catch (err) {
             if (err.status === 404) {
                 return null; // No band info yet
+            }
+            throw err;
+        }
+    },
+
+    // Get band info for a specific tenant ID without switching context
+    // More efficient when loading multiple bands at once
+    async getBandInfoForTenant(tenantId) {
+        try {
+            const docId = `band-info_${tenantId}`;
+            const doc = await this.db.get(docId);
+            return doc;
+        } catch (err) {
+            if (err.status === 404) {
+                return null;
             }
             throw err;
         }
@@ -285,7 +299,8 @@ const DB = {
         
         try {
             // Try to get existing to preserve _rev
-            const existing = await this.db.get('band-info');
+            const docId = `band-info_${this.currentTenant}`;
+            const existing = await this.db.get(docId);
             bandInfo._rev = existing._rev;
         } catch (err) {
             if (err.status !== 404) {
@@ -294,7 +309,8 @@ const DB = {
             // 404 is fine - it's a new doc
         }
         
-        bandInfo._id = 'band-info';
+        // Use tenant-specific ID so each band has its own document
+        bandInfo._id = `band-info_${this.currentTenant}`;
         return await this.db.put(bandInfo);
     }
 };

@@ -1,18 +1,84 @@
-# Deploying Roady to GitHub Pages
+# Deploying Roady
 
-This guide walks you through deploying Roady as a Progressive Web App (PWA) to GitHub Pages, allowing users to install it on their phones.
+This guide covers deploying Roady as a Progressive Web App (PWA) to argw.com via GitHub Actions, with optional GitHub Pages deployment.
 
 ---
 
 ## Prerequisites
 
-- A GitHub account
+- A GitHub account with repo access
 - Git installed on your computer
 - The Roady code in a local folder
+- SSH access to argw.com (as root)
 
 ---
 
-## Step 1: Create a GitHub Repository
+## Deploying to argw.com via GitHub Actions
+
+### Step 1: Generate SSH Key
+
+On your local machine:
+
+```bash
+ssh-keygen -t ed25519 -C "jm@argw.com" -f ~/.ssh/argw_deploy
+```
+
+This creates:
+- `~/.ssh/argw_deploy` (private key)
+- `~/.ssh/argw_deploy.pub` (public key)
+
+### Step 2: Add Public Key to argw.com
+
+On argw.com (as root):
+
+```bash
+# Add public key to root's authorized_keys
+cat >> ~/.ssh/authorized_keys << 'EOF'
+<paste contents of ~/.ssh/argw_deploy.pub here>
+EOF
+
+chmod 600 ~/.ssh/authorized_keys
+```
+
+### Step 3: Test SSH Connection
+
+From your local machine:
+
+```bash
+ssh -i ~/.ssh/argw_deploy root@argw.com "ls -la /var/www/argw.com/"
+```
+
+Should list the roady directory without errors.
+
+### Step 4: Configure GitHub Secrets
+
+In your GitHub repo → Settings → Secrets and variables → Actions → New repository secret:
+
+1. **`DEPLOY_KEY`**
+   - Contents of `~/.ssh/argw_deploy` (private key file, entire contents)
+
+2. **`DEPLOY_USER`**
+   - Value: `root`
+
+3. **`KNOWN_HOSTS`**
+   - Run locally: `ssh-keyscan argw.com`
+   - Paste the entire output
+
+### Step 5: Automatic Deployment
+
+The GitHub Actions workflow in `.github/workflows/deploy.yml` will:
+
+- Deploy on every push to `main` branch
+- Use rsync to sync files to `/var/www/argw.com/roady/`
+- Automatically delete files on server that don't exist locally
+
+You can also trigger manual deployments from Actions tab.
+
+---
+
+## Deploying to GitHub Pages (Optional)
+
+### Step 1: Create a GitHub Repository
 
 1. Go to [GitHub.com](https://github.com) and sign in
 2. Click the **"+"** icon in the top-right corner
