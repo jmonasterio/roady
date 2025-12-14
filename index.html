@@ -32,11 +32,20 @@
     <script src="js/tenant-manager.js"></script>
     <script src="js/app.js"></script>
 
+    <!-- Production Clerk Configuration -->
     <script async crossorigin="anonymous"
-        data-clerk-publishable-key="pk_test_ZGVzaXJlZC1sYWItMjcuY2xlcmsuYWNjb3VudHMuZGV2JA"
-        src="https://desired-lab-27.clerk.accounts.dev/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
+        data-clerk-publishable-key="pk_live_Y2xlcmsuYXJndy5jb20k"
+        src="https://clerk.argw.com/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
         type="text/javascript">
         </script>
+
+    <!-- 
+      DEV KEYS (commented out - use above production keys for argw.com):
+      - Old test key: pk_test_ZGVzaXJlZC1sYWItMjcuY2xlcmsuYWNjb3VudHMuZGV2JA
+      - Old dev domain: https://desired-lab-27.clerk.accounts.dev
+      
+      TODO (Phase 5): Create environment-based build step to switch keys between staging/production
+    -->
 
 
 
