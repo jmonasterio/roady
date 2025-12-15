@@ -160,8 +160,10 @@
             // 4. Initialize Tenant Context with loaded options
             try {
                 console.log('🏢 Initializing Tenant Context...');
+                console.log('🔗 Passing mycouchBaseUrl to TenantManager:', this.options.mycouchBaseUrl);
                 const tenantManager = new TenantManager(this.options.mycouchBaseUrl);
                 window.tenantManager = tenantManager;
+                console.log('✅ TenantManager created with URL:', tenantManager.mycouchBaseUrl);
 
                 const tenant = await tenantManager.initializeTenantContext();
                 this.options.tenantId = tenant.tenantId;
@@ -306,14 +308,27 @@
         async loadOptions() {
             try {
                 const saved = await DB.getOptions();
+                console.log('📦 Loaded options from storage:', saved);
                 if (saved && Object.keys(saved).length > 0) {
                     this.options = saved;
+                    console.log('✅ Options loaded:', this.options);
                 }
 
-                // Default sync URL if missing
+                // Set defaults if missing
+                if (!this.options.mycouchBaseUrl) {
+                    console.log('🔧 Setting default MyCouch URL');
+                    this.options.mycouchBaseUrl = 'http://localhost:5985';
+                }
+                
                 if (!this.options.couchDbUrl) {
                     console.log('🔧 Setting default CouchDB URL');
                     this.options.couchDbUrl = 'http://localhost:5985/roady';
+                }
+                
+                console.log('📦 Final options before TenantManager init:', this.options);
+                
+                // Save if any defaults were set
+                if (!saved || !saved.mycouchBaseUrl || !saved.couchDbUrl) {
                     await this.saveOptions();
                 }
             } catch (e) {
