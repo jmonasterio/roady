@@ -2,8 +2,8 @@
 // Handles tenant detection, selection, and JWT metadata management
 
 class TenantManager {
-    constructor() {
-        this.mycouchBaseUrl = 'http://localhost:5985'; // MyCouch proxy
+    constructor(mycouchBaseUrl = 'http://localhost:5985') {
+        this.mycouchBaseUrl = mycouchBaseUrl; // MyCouch proxy
         this.currentTenant = null;
         this.tenantList = [];
         this.currentUserSub = null; // Clerk sub (user_<hash>)

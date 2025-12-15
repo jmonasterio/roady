@@ -74,6 +74,20 @@ The GitHub Actions workflow in `.github/workflows/deploy.yml` will:
 
 You can also trigger manual deployments from Actions tab.
 
+### Server Architecture
+
+```
+argw.com/
+├── /var/www/argw.com/
+│   ├── roady/          (PWA frontend → https://argw.com/roady)
+│   └── mycouch/        (FastAPI proxy → https://argw.com/mycouch)
+├── /opt/couchdb/       (CouchDB backend - main application database)
+│   ├── bin/couchdb
+│   ├── etc/couchdb.ini (config)
+│   └── data/           (databases: couch-sitter, roady)
+└── /var/log/couchdb/   (logs)
+```
+
 ---
 
 ## Deploying to GitHub Pages (Optional)

@@ -87,6 +87,7 @@
         },
         options: {
             couchDbUrl: '',
+            mycouchBaseUrl: 'http://localhost:5985',
             tenantId: ''
         },
         syncStatus: 'idle',
@@ -153,10 +154,13 @@
 
             console.log('👤 User signed in:', Clerk.user.primaryEmailAddress?.emailAddress);
 
-            // 3. Initialize Tenant Context
+            // 3. Load Options first (before tenant init, so we have mycouchBaseUrl)
+            await this.loadOptions();
+
+            // 4. Initialize Tenant Context with loaded options
             try {
                 console.log('🏢 Initializing Tenant Context...');
-                const tenantManager = new TenantManager();
+                const tenantManager = new TenantManager(this.options.mycouchBaseUrl);
                 window.tenantManager = tenantManager;
 
                 const tenant = await tenantManager.initializeTenantContext();
@@ -176,9 +180,6 @@
                 this.startBackgroundRetry();
                 // Continue anyway with cached data - user can work offline
             }
-
-            // 4. Load Options and Data
-            await this.loadOptions();
 
             // If we still don't have a tenant ID (and init failed), try to get from options
             if (!this.options.tenantId) {
@@ -1246,7 +1247,7 @@
                 }
                 
                 console.log('Creating band with token:', token.substring(0, 20) + '...');
-                const response = await fetch('http://localhost:5985/__tenants', {
+                const response = await fetch(`${this.options.mycouchBaseUrl}/__tenants`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1401,7 +1402,7 @@
 
             try {
                 const token = await Clerk.session?.getToken();
-                const response = await fetch(`http://localhost:5985/invite`, {
+                const response = await fetch(`${this.options.mycouchBaseUrl}/invite`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1469,7 +1470,7 @@
                 // Delete via /__tenants endpoint
                 // Backend must verify: user owns the tenant AND no other members in the band
                 const token = await Clerk.session?.getToken();
-                const response = await fetch(`http://localhost:5985/__tenants/${this.currentBandTenantId}`, {
+                const response = await fetch(`${this.options.mycouchBaseUrl}/__tenants/${this.currentBandTenantId}`, {
                     method: 'DELETE',
                     headers: {
                         'Authorization': `Bearer ${token}`

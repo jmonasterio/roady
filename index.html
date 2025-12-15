@@ -722,15 +722,21 @@
                     <!-- Tenant info is now displayed in the navigation bar via MyCouch integration -->
 
                     <div style="margin-top: 2rem;">
-                        <h4>Sync Settings</h4>
+                         <h4>Sync Settings</h4>
 
-                        <label>
-                            CouchDB URL
-                            <input type="text" x-model="options.couchDbUrl" @change="saveOptions()"
-                                placeholder="http://localhost:5985/roady" />
-                        </label>
+                         <label>
+                             MyCouch Server URL
+                             <input type="text" x-model="options.mycouchBaseUrl" @change="saveOptions()"
+                                 placeholder="http://localhost:5985" />
+                         </label>
 
-                        <div x-show="options.couchDbUrl" style="margin-top: 1rem;">
+                         <label>
+                             CouchDB URL
+                             <input type="text" x-model="options.couchDbUrl" @change="saveOptions()"
+                                 placeholder="http://localhost:5985/roady" />
+                         </label>
+
+                         <div x-show="options.couchDbUrl" style="margin-top: 1rem;">
                             <div
                                 style="display: flex; align-items: center; gap: 1rem; padding: 1rem; background: var(--pico-form-element-background-color); border-radius: var(--pico-border-radius);">
                                 <div style="flex: 1;">
