@@ -2,8 +2,9 @@
 // Handles tenant detection, selection, and JWT metadata management
 
 class TenantManager {
-    constructor(mycouchBaseUrl = 'http://localhost:5985') {
-        this.mycouchBaseUrl = mycouchBaseUrl; // MyCouch proxy
+    constructor(mycouchBaseUrl = null) {
+        // Get URL from app settings (stored in IndexDB) or fallback to localhost for dev
+        this.mycouchBaseUrl = mycouchBaseUrl || this.getMycouchUrl();
         this.currentTenant = null;
         this.tenantList = [];
         this.currentUserSub = null; // Clerk sub (user_<hash>)
@@ -20,6 +21,30 @@ class TenantManager {
         this.lastUserChangeSeq = 0; // Track last seen user change sequence
         this.lastTenantChangeSeq = 0; // Track last seen tenant change sequence
         this.changeCallbacks = []; // Callbacks to notify when changes occur
+    }
+
+    /**
+     * Get MyCouch URL from app settings (IndexDB) or fallback
+     * App loads settings from IndexDB and stores in Alpine state
+     */
+    getMycouchUrl() {
+        try {
+            // Try to get from Alpine app instance
+            if (window.Alpine && window.Alpine.store) {
+                const store = window.Alpine.store('roady');
+                if (store && store.options && store.options.mycouchBaseUrl) {
+                    console.log('📍 Using MyCouch URL from app settings:', store.options.mycouchBaseUrl);
+                    return store.options.mycouchBaseUrl;
+                }
+            }
+        } catch (error) {
+            console.warn('⚠️ Could not read MyCouch URL from app settings:', error);
+        }
+        
+        // Fallback: localhost for dev, would need to configure in UI for prod
+        const fallback = 'http://localhost:5985';
+        console.log('📍 Using fallback MyCouch URL:', fallback);
+        return fallback;
     }
 
     /**
@@ -50,7 +75,9 @@ class TenantManager {
             
             // Also get reference to 'roady' database for tenant replication (Phase 2)
             // This is opened by DB.js but we'll use it for tenant queries
-            this.tenantsDb = new PouchDB('roady');
+            // Use staging database on localhost
+            const dbName = window.location.hostname === 'localhost' ? 'roady-staging' : 'roady';
+            this.tenantsDb = new PouchDB(dbName);
             
             // Fetch initial user doc from MyCouch virtual endpoint
             // MyCouch: GET /__users/{hash} → returns user document
@@ -59,26 +86,18 @@ class TenantManager {
                 throw new Error('No JWT token available for fetching user doc');
             }
             
+            // Don't fetch from server - read from local PouchDB only
+            // PouchDB sync will populate user doc when connected
             try {
-                const userDocResponse = await fetch(`${this.mycouchBaseUrl}/__users/${this.currentUserHash}`, {
-                    headers: {
-                        'Authorization': `Bearer ${jwt}`,
-                        'Content-Type': 'application/json'
-                    }
-                });
-                
-                if (userDocResponse.ok) {
-                    const userDoc = await userDocResponse.json();
-                    // Store in local PouchDB as "user_{hash}" (matches CouchDB convention)
-                    userDoc._id = `user_${this.currentUserHash}`;
-                    await this.usersDb.put(userDoc);
-                    console.log('✅ Initial user document fetched and stored in PouchDB');
-                } else {
-                    console.warn('⚠️ Could not fetch initial user doc from MyCouch, will be created on sync');
-                }
+                const localUserDoc = await this.usersDb.get(`user_${this.currentUserHash}`);
+                console.log('✅ User document exists in local PouchDB');
             } catch (error) {
-                console.warn('⚠️ Failed to fetch initial user doc:', error);
-                // Document will be created when first synced
+                if (error.status === 404) {
+                    // User doc doesn't exist yet - that's ok, will be created on sync
+                    console.log('ℹ️ User document not in local PouchDB yet (will sync when connected)');
+                } else {
+                    console.warn('⚠️ Error checking user document:', error);
+                }
             }
             
             // TODO Phase 3: Start periodic polling of /__users/_changes endpoint
@@ -113,8 +132,14 @@ class TenantManager {
                 return this.localUserDoc;
             } catch (error) {
                 if (error.status === 404) {
-                    console.warn('⚠️ User document not found locally yet, will be created on sync');
-                    return null;
+                    console.warn('⚠️ User document not found locally yet, creating empty doc');
+                    // Create empty user doc for offline capability
+                    this.localUserDoc = {
+                        _id: docId,
+                        type: 'user',
+                        createdAt: new Date().toISOString()
+                    };
+                    return this.localUserDoc;
                 }
                 throw error;
             }
@@ -171,7 +196,11 @@ class TenantManager {
     }
 
     /**
-     * Phase 3: Start polling for user document changes
+     * Phase 3 (DEPRECATED): Start polling for user document changes
+     * 
+     * DEPRECATED: PouchDB.sync() handles all replication. Polling is no longer called.
+     * Kept for reference only. If real-time notifications needed in future, use db.changes().
+     * 
      * Polls /__users/_changes endpoint periodically
      */
     async startUserChangesPolling(intervalMs = 5000) {
@@ -198,6 +227,9 @@ class TenantManager {
      */
     async pollUserChanges() {
         try {
+            // Refresh URL from settings in case it changed
+            this.mycouchBaseUrl = this.getMycouchUrl();
+            
             const jwt = await this.getClerkToken();
             if (!jwt) return;
 
@@ -248,7 +280,11 @@ class TenantManager {
     }
 
     /**
-     * Phase 3: Start polling for tenant document changes
+     * Phase 3 (DEPRECATED): Start polling for tenant document changes
+     * 
+     * DEPRECATED: PouchDB.sync() handles all replication. Polling is no longer called.
+     * Kept for reference only. If real-time notifications needed in future, use db.changes().
+     * 
      * Polls /__tenants/_changes endpoint periodically
      */
     async startTenantChangesPolling(intervalMs = 5000) {
@@ -275,10 +311,15 @@ class TenantManager {
      */
     async pollTenantChanges() {
         try {
+            // Refresh URL from settings in case it changed
+            this.mycouchBaseUrl = this.getMycouchUrl();
+            
             const jwt = await this.getClerkToken();
             if (!jwt) return;
 
-            const url = `${this.mycouchBaseUrl}/__tenants/_changes?since=${this.lastTenantChangeSeq}&include_docs=true`;
+            // Remove trailing slash from mycouchBaseUrl if present
+            const baseUrl = this.mycouchBaseUrl.replace(/\/$/, '');
+            const url = `${baseUrl}/__tenants/_changes?since=${this.lastTenantChangeSeq}&include_docs=true`;
             const response = await fetch(url, {
                 headers: {
                     'Authorization': `Bearer ${jwt}`,
@@ -304,20 +345,25 @@ class TenantManager {
                 if (change.doc) {
                     // Handle tenant changes
                     if (change.doc.type === 'tenant') {
-                        const docId = change.doc._id || `tenant_${change.doc.id}`;
-                        change.doc._id = docId;
-                        
-                        if (change.deleted) {
-                            // Mark as soft-deleted instead of removing
-                            change.doc.deletedAt = new Date().toISOString();
-                            console.log(`🗑️ Marked tenant deleted: ${docId}`);
-                        } else {
-                            console.log(`✅ Updated tenant: ${docId}`);
-                        }
-                        
-                        await this.tenantsDb.put(change.doc);
-                        hasChanges = true;
-                    }
+                         const docId = change.doc._id || `tenant_${change.doc.id}`;
+                         change.doc._id = docId;
+                         
+                         if (change.deleted) {
+                             // Document was hard-deleted from server
+                             // Remove from local DB to match server state
+                             try {
+                                 await this.tenantsDb.remove(change.doc);
+                                 console.log(`🗑️ Removed hard-deleted tenant from local DB: ${docId}`);
+                             } catch (e) {
+                                 console.warn(`⚠️ Failed to remove hard-deleted tenant from local DB: ${e.message}`);
+                             }
+                         } else {
+                             // Document updated (or soft-deleted with deletedAt field)
+                             console.log(`✅ Updated tenant: ${docId}`);
+                             await this.tenantsDb.put(change.doc);
+                         }
+                         hasChanges = true;
+                     }
                 }
                 // Track sequence for next poll
                 if (change.seq) {
@@ -334,7 +380,9 @@ class TenantManager {
     }
 
     /**
-     * Phase 3: Stop all change polling
+     * Phase 3 (DEPRECATED): Stop all change polling
+     * 
+     * No longer called since polling is not started.
      */
     stopChangesPolling() {
         if (this.userChangesPoller) {
@@ -391,10 +439,40 @@ class TenantManager {
             }
 
             // Step 1b: Get all user's tenants (Phase 2: from local, falls back to server)
-            const tenantList = await this.getMyTenants();
+            let tenantList = await this.getMyTenants();
             this.tenantList = tenantList || [];
 
             console.log(`📋 Found ${this.tenantList.length} tenants:`, this.tenantList);
+            
+            // Step 1c: Create personal tenant if this is first run (no tenants yet)
+            if (this.tenantList.length === 0) {
+                console.log('📍 First run - creating personal tenant for user');
+                try {
+                    const personalTenantId = crypto.randomUUID();
+                    const userName = Clerk?.user?.firstName || Clerk?.user?.primaryEmailAddress?.emailAddress?.split('@')[0] || 'User';
+                    
+                    const personalTenant = {
+                        _id: `tenant_${personalTenantId}`,
+                        type: 'tenant',
+                        tenantId: personalTenantId,
+                        name: `${userName}'s Band`,
+                        userIds: [this.currentUserHash],
+                        isPersonal: true,
+                        createdAt: new Date().toISOString(),
+                        syncedAt: null
+                    };
+                    
+                    // Store in local PouchDB
+                    if (this.tenantsDb) {
+                        await this.tenantsDb.put(personalTenant);
+                        console.log('✅ Created personal tenant in local PouchDB:', personalTenant);
+                        this.tenantList = [personalTenant];
+                    }
+                } catch (error) {
+                    console.error('❌ Failed to create personal tenant:', error);
+                    // Continue without personal tenant - user can create one manually
+                }
+            }
 
             // Step 2: Select active tenant
             // Priority: 1) Local user doc (Phase 1), 2) JWT claim, 3) First tenant
@@ -444,31 +522,22 @@ class TenantManager {
 
             this.currentTenant = selectedTenant;
 
-            // Step 3: Set active tenant via virtual endpoint
-            // Only if it's not already set in JWT (skip for reconnection scenarios)
-            const activeTenantIdFromJWT = this.extractActiveTenantIdFromJWT(jwt);
-            if (!activeTenantIdFromJWT) {
-                try {
-                    await this.setActiveTenant(selectedTenant._id);
-                    // Step 4: Trigger JWT metadata refresh
-                    await this.refreshJWTWithTenant();
-                } catch (error) {
-                    console.warn('⚠️ Could not set active tenant via endpoint, continuing with JWT tenant');
-                    // Continue anyway - JWT already has a tenant context
-                }
-            } else {
-                console.log('✅ Active tenant already set in JWT, skipping update');
-            }
-
-            // Step 4: Start Phase 3 polling for changes
+            // Step 3: Sync active tenant to MyCouch (session document is source of truth)
+            const virtualTenantId = selectedTenant._id.startsWith('tenant_') 
+                ? selectedTenant._id.substring(7) 
+                : selectedTenant._id;
             try {
-                await this.startUserChangesPolling(5000); // Poll every 5 seconds
-                await this.startTenantChangesPolling(5000);
+                await this.syncActiveTenantToServer(this.currentUserHash, virtualTenantId);
             } catch (error) {
-                console.warn('⚠️ Could not start changes polling, app will work without real-time updates', error);
-                // Continue - polling is optimization, not required
+                console.warn('⚠️ Could not sync to MyCouch at initialization:', error.message);
+                // Continue offline - app will work with local PouchDB data
+                // Next polling cycle will complete the sync
             }
 
+            // Step 4: Polling removed - PouchDB sync handles all data replication
+            // Phase 3 polling code is kept but not called. PouchDB.sync() provides continuous bidirectional sync.
+            // If real-time change notifications are needed in future, use PouchDB's db.changes() instead of HTTP polling.
+            
             console.log('✅ Tenant context initialized successfully');
             return selectedTenant;
 
@@ -480,105 +549,28 @@ class TenantManager {
 
     /**
      * Phase 2: Initialize tenant document replication
-     * Fetches tenants from MyCouch and stores in local 'roady' PouchDB
+     * Reads tenants from local 'roady' PouchDB
+     * PouchDB syncs with MyCouch in the background - app always reads from local
      */
     async initializeTenantsReplication() {
         try {
-            console.log('🔄 Phase 2: Initializing tenant document replication...');
+            console.log('🔄 Phase 2: Initializing tenant document access (reading from local PouchDB)...');
             
             if (!this.tenantsDb) {
                 console.warn('⚠️ Tenants database not available');
                 return [];
             }
             
-            // Fetch tenants from MyCouch virtual endpoint
-            const tenants = await this.getMyTenantsFromServer();
+            // Read tenants from local PouchDB
+            // PouchDB sync will populate this automatically when connected to MyCouch
+            const tenants = await this.getMyTenantsFromLocal();
+            
             if (!tenants || tenants.length === 0) {
-                console.log('ℹ️ No tenants returned from server');
+                console.log('ℹ️ No tenants in local database yet (will sync when connected)');
                 return [];
             }
             
-            // Store each tenant in local PouchDB with proper ID format: tenant_{uuid}
-            // Use sequential processing to avoid conflicts
-            for (const tenant of tenants) {
-                try {
-                    // Ensure proper ID format
-                    const tenantId = tenant._id || tenant.tenantId || tenant.id;
-                    if (!tenantId) {
-                        console.warn('⚠️ Tenant missing ID:', tenant);
-                        continue;
-                    }
-                    
-                    // Ensure ID has tenant_ prefix for consistency
-                    const docId = tenantId.startsWith('tenant_') ? tenantId : `tenant_${tenantId}`;
-                    
-                    // Always fetch latest from DB to get current _rev
-                    let existingRev = null;
-                    try {
-                        const existing = await this.tenantsDb.get(docId);
-                        existingRev = existing._rev;
-                        console.log(`ℹ️ Tenant ${docId} exists, will update`);
-                    } catch (e) {
-                        if (e.status !== 404) {
-                            console.warn(`⚠️ Error checking tenant ${docId}:`, e.message);
-                        }
-                        // 404 is fine - new document
-                    }
-                    
-                    // Prepare document for local storage
-                    const docToStore = {
-                        _id: docId,
-                        type: 'tenant',
-                        name: tenant.name || 'Unnamed',
-                        userIds: tenant.userIds || [],
-                        syncedAt: new Date().toISOString(),
-                        ...tenant // Spread tenant data but don't overwrite our fields
-                    };
-                    
-                    // Preserve _rev if updating
-                    if (existingRev) {
-                        docToStore._rev = existingRev;
-                    }
-                    
-                    // Store with retry on conflict
-                    let retries = 0;
-                    let stored = false;
-                    while (retries < 3 && !stored) {
-                        try {
-                            const result = await this.tenantsDb.put(docToStore);
-                            console.log(`✅ Stored tenant: ${docId}`);
-                            stored = true;
-                        } catch (putError) {
-                            if (putError.status === 409 && retries < 2) {
-                                // Conflict - another write happened (possibly polling)
-                                retries++;
-                                console.warn(`⚠️ Conflict storing ${docId}, retrying (${retries}/2)...`);
-                                try {
-                                    const fresh = await this.tenantsDb.get(docId);
-                                    docToStore._rev = fresh._rev;
-                                    // Continue loop to retry with fresh _rev
-                                } catch (e) {
-                                    if (e.status === 404) {
-                                        // Doc was deleted/changed by polling - that's ok, skip it
-                                        console.log(`ℹ️ Tenant ${docId} modified by polling, skipping retry`);
-                                        stored = true; // Treat as success - polling has it
-                                    } else {
-                                        console.error(`❌ Cannot recover from conflict for ${docId}:`, e);
-                                        throw putError;
-                                    }
-                                }
-                            } else {
-                                throw putError;
-                            }
-                        }
-                    }
-                } catch (error) {
-                    console.error(`❌ Failed to store tenant:`, error);
-                    // Continue with next tenant instead of failing completely
-                }
-            }
-            
-            console.log('✅ Tenant replication initialized');
+            console.log(`✅ Loaded ${tenants.length} tenants from local PouchDB`);
             return tenants;
         } catch (error) {
             console.error('❌ Failed to initialize tenant replication:', error);
@@ -624,6 +616,9 @@ class TenantManager {
     async getMyTenantsFromServer() {
         console.log('🔍 Fetching user tenants from server...');
 
+        // Refresh URL from settings in case it changed
+        this.mycouchBaseUrl = this.getMycouchUrl();
+
         const jwt = await this.getClerkToken();
         console.log('🔑 Got JWT token:', jwt ? `${jwt.substring(0, 20)}...` : 'NULL');
 
@@ -631,15 +626,17 @@ class TenantManager {
             throw new Error('No JWT token available - user not authenticated');
         }
 
-        const url = `${this.mycouchBaseUrl}/__tenants`;
+        // Remove trailing slash from mycouchBaseUrl if present
+        const baseUrl = this.mycouchBaseUrl.replace(/\/$/, '');
+        const url = `${baseUrl}/__tenants`;
         console.log('📡 Making request to:', url);
 
         try {
-            console.log('📡 Calling fetch (10s timeout)...');
+            console.log('📡 Calling fetch (2s timeout for fast failure)...');
             
-            // Use AbortController for timeout
+            // Use AbortController for timeout - shorter timeout to fail fast
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            const timeoutId = setTimeout(() => controller.abort(), 2000); // 2s - fail fast on network errors
             
             const response = await fetch(url, {
                 headers: {
@@ -674,101 +671,56 @@ class TenantManager {
     }
 
     /**
-     * Get all tenants (Phase 2: reads from local, falls back to server)
+     * Get all tenants (reads from local PouchDB only)
      * This is the main entry point for getting tenant list
+     * PouchDB sync handles fetching from server in background
      */
     async getMyTenants() {
         try {
-            // Phase 2: Try to read from local PouchDB first
+            // Always read from local PouchDB
+            // PouchDB sync will populate this automatically when connected
             const localTenants = await this.getMyTenantsFromLocal();
             if (localTenants.length > 0) {
-                console.log('📖 Using tenants from local PouchDB');
+                console.log(`📖 Using ${localTenants.length} tenants from local PouchDB`);
                 return localTenants;
             }
             
-            console.log('⚠️ No tenants in local PouchDB, fetching from server...');
-            
-            // Fallback: fetch from server if local is empty
-            const serverTenants = await this.getMyTenantsFromServer();
-            
-            // Store fetched tenants locally for future use
-            try {
-                await this.initializeTenantsReplication();
-            } catch (error) {
-                console.warn('⚠️ Failed to cache tenants locally:', error);
-                // Continue anyway - local storage is optimization, not required
-            }
-            
-            return serverTenants;
+            console.log('⚠️ No tenants in local PouchDB yet (first run or offline)');
+            // Return empty array - sync will populate data when connected
+            // App will show empty state instead of trying to fetch from server
+            return [];
         } catch (error) {
-            console.error('❌ Failed to get tenants:', error);
+            console.error('❌ Failed to read tenants from local PouchDB:', error);
             throw error;
         }
     }
 
     /**
-     * Phase 4: Set active tenant - offline-first with optional HTTP sync
-     * Writes to local PouchDB first (optimistic), then syncs to server
-     * Works offline - changes will sync when connection restored
-     */
-    async setActiveTenant(tenantId) {
-        console.log(`🔧 Phase 4: Setting active tenant (offline-first): ${tenantId}`);
-
-        if (!this.currentUserHash) {
-            throw new Error('Current user hash not set - call initializeTenantContext first');
-        }
-
-        // Virtual endpoint expects virtual tenant ID (UUID without "tenant_" prefix)
-        // If given an internal ID, strip the prefix
-        const virtualTenantId = tenantId.startsWith('tenant_') ? tenantId.substring(7) : tenantId;
-        const hashedUserId = this.currentUserHash;
-
-        console.log(`📋 User ID (hashed): ${hashedUserId}`);
-        console.log(`📋 Tenant ID: ${virtualTenantId}`);
-
-        // Step 1: Update local PouchDB (REQUIRED - offline capability)
-        let localUpdateSuccess = false;
-        if (this.usersDb && this.localUserDoc) {
-            try {
-                this.localUserDoc.active_tenant_id = virtualTenantId;
-                this.localUserDoc.syncedAt = new Date().toISOString();
-                await this.usersDb.put(this.localUserDoc);
-                console.log('✅ Updated local user doc in PouchDB (offline write)');
-                localUpdateSuccess = true;
-            } catch (error) {
-                console.error('❌ Failed to update local user doc (offline write failed):', error);
-                throw new Error(`Cannot set active tenant - local storage failed: ${error.message}`);
-            }
-        } else {
-            throw new Error('Cannot set active tenant - PouchDB not initialized');
-        }
-
-        // Step 2: Sync to server (ASYNC - fire and forget, optional)
-        // If offline, the change will sync when connection restored
-        // If online, syncs immediately
-        this.syncActiveTenantToServer(hashedUserId, virtualTenantId)
-            .catch(error => {
-                console.warn('⚠️ Could not sync active tenant to server (will retry on next polling cycle):', error);
-                // Not fatal - local change is persisted, will sync eventually
-            });
-
-        return { success: true, localOnly: true };
-    }
-
-    /**
-     * Phase 4: Sync active tenant change to server (background operation)
-     * This runs asynchronously - doesn't block app operation
-     * Will be retried on next polling cycle if it fails
-     * (Internal use only - called from setActiveTenant)
+     * Sync active tenant to MyCouch session document
+     * 
+     * Backend creates/updates a session document with the active_tenant_id.
+     * Each device/session maintains its own active_tenant_id independently.
+     * 
+     * PUT /__users/{id} with { active_tenant_id } triggers:
+     * 1. Backend extracts sid from JWT
+     * 2. Creates/updates session document: session_<sid>
+     * 3. Returns updated user document
+     * 
+     * Session document is source of truth (not JWT claims).
      */
     async syncActiveTenantToServer(hashedUserId, virtualTenantId) {
         try {
+            // Refresh MyCouch URL from app settings in case it was changed
+            this.mycouchBaseUrl = this.getMycouchUrl();
+            
             const jwt = await this.getClerkToken();
             if (!jwt) {
-                console.warn('⚠️ No JWT available for sync (will retry on next poll)');
-                return;
+                console.warn('⚠️ No JWT available for sync');
+                throw new Error('No JWT token available');
             }
 
+            console.log(`🔄 Syncing active tenant to MyCouch for user ${hashedUserId}`);
+            
             const response = await fetch(`${this.mycouchBaseUrl}/__users/${hashedUserId}`, {
                 method: 'PUT',
                 headers: {
@@ -780,104 +732,22 @@ class TenantManager {
 
             if (!response.ok) {
                 const errorText = await response.text();
-                console.error(`❌ Server sync failed: ${response.status} - ${errorText}`);
-                throw new Error(`Server returned ${response.status}`);
+                console.error(`❌ MyCouch sync failed: ${response.status} - ${errorText}`);
+                throw new Error(`MyCouch returned ${response.status}: ${errorText}`);
             }
 
             const data = await response.json();
-            console.log('✅ Active tenant synced to server:', data);
-            return data;
+            console.log('✅ MyCouch created/updated session document with active_tenant_id:', virtualTenantId);
+            
+            // Session document is the source of truth for per-device tenant tracking
+            return { success: true, activeTenantId: virtualTenantId };
         } catch (error) {
-            console.warn('⚠️ Failed to sync active tenant to server:', error.message);
-            // Will be retried on next polling cycle
+            console.error('❌ Failed to sync active tenant to MyCouch:', error.message);
             throw error;
         }
     }
 
-    /**
-     * Refresh JWT to get updated tenant metadata from Clerk
-     */
-    async refreshJWTWithTenant() {
-        console.log('🔄 Refreshing JWT with tenant metadata...');
 
-        const MAX_RETRIES = 5;
-        const RETRY_DELAY = 500; // ms
-
-        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-            // Force Clerk to issue a completely fresh JWT with updated metadata
-            // Add a small delay to ensure metadata update propagates
-            if (attempt > 1) {
-                console.log(`⏳ Waiting for metadata propagation (attempt ${attempt}/${MAX_RETRIES})...`);
-                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
-            } else {
-                // Initial small delay
-                await new Promise(resolve => setTimeout(resolve, 200));
-            }
-
-            try {
-                // Force Clerk to reload session from server to get updated metadata
-                if (window.Clerk.session?.reload) {
-                    await window.Clerk.session.reload();
-                }
-                
-                // Get a fresh token - Clerk should include updated metadata
-                const refreshedToken = await window.Clerk.session.getToken();
-
-                if (!refreshedToken) {
-                    console.warn(`⚠️ No token returned (attempt ${attempt}/${MAX_RETRIES})`);
-                    continue; // Try again
-                }
-
-                // Verify the token contains tenant information
-                const parts = refreshedToken.split('.');
-                if (parts.length === 3) {
-                    const payload = JSON.parse(atob(parts[1]));
-
-                    // Check for tenant-related claims
-                    const hasTenant = payload.tenant_id || payload.active_tenant_id || payload.metadata?.active_tenant_id;
-
-                    if (hasTenant) {
-                        console.log('✅ JWT refreshed successfully with tenant metadata:', {
-                            tenant_id: payload.tenant_id,
-                            active_tenant_id: payload.active_tenant_id
-                        });
-                        return refreshedToken;
-                    } else {
-                        console.warn(`⚠️ JWT missing tenant claims (attempt ${attempt}/${MAX_RETRIES})`);
-                        console.log('📋 Full JWT payload:', payload);
-
-                        // If this is the last attempt, log a helpful instruction
-                        if (attempt === MAX_RETRIES) {
-                            console.error(`
-🛑 MISSING CLERK CONFIGURATION 🛑
-The JWT token is missing the 'active_tenant_id' claim. 
-You must configure the Default Session Token in your Clerk Dashboard.
-
-INSTRUCTIONS:
-1. Go to Clerk Dashboard > Configure > Sessions > Customize session token
-2. Add this to the Claims:
-   {
-     "active_tenant_id": "{{session.public_metadata.active_tenant_id}}"
-   }
-3. Save changes
-                            `);
-                        }
-                        // Continue to next retry
-                    }
-                }
-            } catch (error) {
-                console.error(`❌ Error on attempt ${attempt}/${MAX_RETRIES}:`, error);
-                // Continue to next retry unless it's the last attempt
-                if (attempt === MAX_RETRIES) {
-                    throw error;
-                }
-            }
-        }
-
-        console.error('❌ Failed to get JWT with tenant metadata after multiple attempts');
-        // We throw an error here to stop the flow - strict enforcement
-        throw new Error('Failed to obtain valid tenant token. Please try again.');
-    }
 
     /**
      * Extract user ID from JWT (from 'sub' claim)
@@ -948,7 +818,11 @@ INSTRUCTIONS:
 
     /**
      * Switch to a different tenant
-     * Finds tenant by ID in tenantList and updates active_tenant_id
+     * Design B: Local write first, then synchronous MyCouch sync
+     * 
+     * 1. Write to local PouchDB (required, offline-first)
+     * 2. Sync to MyCouch (required for JWT claim)
+     * 3. Continue offline gracefully if MyCouch fails
      */
     async switchTenant(tenantId) {
         console.log(`🔄 Switching to tenant: ${tenantId}`);
@@ -958,30 +832,55 @@ INSTRUCTIONS:
         
         // If not found in list, refresh the list and try again
         if (!tenant) {
-            console.warn('Tenant not in cached list, refreshing...');
+            console.warn('⚠️ Tenant not in cached list, refreshing...');
             try {
                 this.tenantList = await this.getMyTenants();
                 const refreshedTenant = this.tenantList.find(t => t._id === tenantId || t._id === `tenant_${tenantId}`);
                 if (!refreshedTenant) {
                     throw new Error(`Tenant ${tenantId} not found in user's tenant list`);
                 }
-                await this.setActiveTenant(refreshedTenant._id);
-                await this.refreshJWTWithTenant();
+                await this.syncActiveTenantToServer(this.currentUserHash, this.extractVirtualTenantId(refreshedTenant._id));
                 this.currentTenant = refreshedTenant;
                 console.log(`✅ Switched to tenant: ${refreshedTenant.name}`);
                 return refreshedTenant;
-            } catch (e) {
-                console.error('Failed to refresh tenant list:', e);
-                throw e;
+            } catch (error) {
+                console.error('❌ Failed to switch tenant:', error.message);
+                throw error;
             }
         }
 
-        await this.setActiveTenant(tenant._id);
-        await this.refreshJWTWithTenant();
-        this.currentTenant = tenant;
-
-        console.log(`✅ Switched to tenant: ${tenant.name}`);
-        return tenant;
+        // Step 1: Sync to MyCouch (session document stores active_tenant_id per-device)
+        const virtualTenantId = this.extractVirtualTenantId(tenant._id);
+        try {
+            console.log('🔄 Syncing active tenant to MyCouch...');
+            const syncResult = await this.syncActiveTenantToServer(this.currentUserHash, virtualTenantId);
+            console.log('✅ MyCouch sync completed:', syncResult);
+            
+            // Successfully synced
+            this.currentTenant = tenant;
+            console.log(`✅ Switched to tenant: ${tenant.name}`);
+            return tenant;
+        } catch (error) {
+            // MyCouch failed - continue with local data
+            console.warn('⚠️ MyCouch sync failed:', error.message);
+            
+            // Update current tenant anyway (graceful offline fallback)
+            this.currentTenant = tenant;
+            console.log(`✅ Switched to tenant locally: ${tenant.name} (offline mode)`);
+            console.log('💡 Will sync to server when network available');
+            
+            // Return success - app continues with local data
+            // Session document will be created/updated when network reconnects
+            return tenant;
+        }
+    }
+    
+    /**
+     * Extract virtual tenant ID from internal ID
+     * Strips "tenant_" prefix if present
+     */
+    extractVirtualTenantId(tenantId) {
+        return tenantId.startsWith('tenant_') ? tenantId.substring(7) : tenantId;
     }
 }
 

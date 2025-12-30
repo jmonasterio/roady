@@ -28,24 +28,35 @@
     <script src="js/auth.js"></script>
     <script src="js/sync.js"></script>
     <script src="js/db.js"></script>
-    <script src="js/storage.js"></script>
     <script src="js/tenant-manager.js"></script>
     <script src="js/app.js"></script>
 
-    <!-- Production Clerk Configuration -->
-    <script async crossorigin="anonymous"
-        data-clerk-publishable-key="pk_live_Y2xlcmsuYXJndy5jb20k"
-        src="https://clerk.argw.com/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
-        type="text/javascript">
-        </script>
-
-    <!-- 
-      DEV KEYS (commented out - use above production keys for argw.com):
-      - Old test key: pk_test_ZGVzaXJlZC1sYWItMjcuY2xlcmsuYWNjb3VudHMuZGV2JA
-      - Old dev domain: https://desired-lab-27.clerk.accounts.dev
-      
-      TODO (Phase 5): Create environment-based build step to switch keys between staging/production
-    -->
+    <!-- Clerk Configuration (dynamically loads based on environment) -->
+    <script>
+        // Detect environment and inject correct Clerk script
+        const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        
+        const clerkConfig = isLocalhost ? {
+            publishableKey: 'pk_test_ZGVzaXJlZC1sYWItMjcuY2xlcmsuYWNjb3VudHMuZGV2JA',
+            clerkJsUrl: 'https://desired-lab-27.clerk.accounts.dev/npm/@clerk/clerk-js@5/dist/clerk.browser.js',
+            label: 'DEV'
+        } : {
+            publishableKey: 'pk_live_Y2xlcmsuYXJndy5jb20k',
+            clerkJsUrl: 'https://clerk.argw.com/npm/@clerk/clerk-js@5/dist/clerk.browser.js',
+            label: 'PRODUCTION'
+        };
+        
+        console.log(`🔑 Clerk: Loading ${clerkConfig.label} keys`);
+        
+        // Create and inject Clerk script
+        const script = document.createElement('script');
+        script.async = true;
+        script.crossOrigin = 'anonymous';
+        script.setAttribute('data-clerk-publishable-key', clerkConfig.publishableKey);
+        script.src = clerkConfig.clerkJsUrl;
+        script.type = 'text/javascript';
+        document.head.appendChild(script);
+    </script>
 
 
 
@@ -75,7 +86,7 @@
 </head>
 
 <body>
-    <div x-data="roady" x-cloak>
+    <div x-data="roady" x-cloak @init="init().catch(error => { console.error('❌ App initialization failed:', error); window.fatalError = error; })">
         <nav class="container-fluid">
             <ul>
                 <li><strong>Roady</strong></li>
@@ -108,6 +119,16 @@
 
         <main class="container">
 
+            <!-- Fatal Error Modal -->
+            <dialog :open="typeof window.fatalError !== 'undefined' && window.fatalError">
+                <article>
+                    <h3>⚠️ Configuration Error</h3>
+                    <p>The application could not start because of a configuration error:</p>
+                    <pre style="background: #f0f0f0; padding: 1rem; border-radius: 0.25rem; overflow-x: auto; font-size: 0.85rem;" x-text="window.fatalError?.message || ''"></pre>
+                    <p><strong>Please contact the administrator and ask them to configure Clerk Dashboard with JWT custom claims for <code>active_tenant_id</code>.</strong></p>
+                </article>
+            </dialog>
+
             <!-- Create Band Dialog -->
             <dialog :open="showCreateBandDialog">
                 <article style="display: flex; flex-direction: column; height: 100%;">
@@ -126,8 +147,8 @@
                         </label>
                     </div>
                     <footer style="display: flex; justify-content: flex-end; gap: 0.5rem;">
-                        <button class="secondary outline" @click="showCreateBandDialog = false" style="margin: 0;">Cancel</button>
-                        <button @click="createBand()" :disabled="!newBandName.trim()" style="margin: 0;">Create Band</button>
+                        <button class="secondary outline" @click="showCreateBandDialog = false" :disabled="isCreatingBand" style="margin: 0;">Cancel</button>
+                        <button @click="createBand()" :disabled="!newBandName.trim() || isCreatingBand" style="margin: 0;">Create Band</button>
                     </footer>
                 </article>
             </dialog>
@@ -646,7 +667,7 @@
                     <button @click="settingsTab = 'myband'" :class="settingsTab === 'myband' ? '' : 'outline'">
                         My Band
                     </button>
-                    <button @click="settingsTab = 'options'" :class="settingsTab === 'options' ? '' : 'outline'">
+                    <button @click="settingsTab = 'options'; loadJwtToken()" :class="settingsTab === 'options' ? '' : 'outline'">
                         Options
                     </button>
                     <button @click="settingsTab = 'trash'; loadDeletedItems()"
@@ -727,31 +748,50 @@
                          <label>
                              MyCouch Server URL
                              <input type="text" x-model="options.mycouchBaseUrl" @change="saveOptions()"
-                                 placeholder="http://localhost:5985" />
+                                 placeholder="http://argw.com:5985" />
                          </label>
 
-                         <label>
-                             CouchDB URL
-                             <input type="text" x-model="options.couchDbUrl" @change="saveOptions()"
-                                 placeholder="http://localhost:5985/roady" />
-                         </label>
+                         <label style="margin-top: 1rem; display: block; color: #666; font-size: 0.9rem;">
+                              <strong>Database Name (Read-Only)</strong>
+                              <input type="text" x-model="currentDbName" readonly
+                                  style="background-color: #f5f5f5; cursor: not-allowed; color: #666;" />
+                              <small style="display: block; margin-top: 0.25rem; color: #999;">
+                                  Uses <strong>roady-staging</strong> on localhost, <strong>roady</strong> in production
+                              </small>
+                          </label>
+                         </div>
 
-                         <div x-show="options.couchDbUrl" style="margin-top: 1rem;">
-                            <div
-                                style="display: flex; align-items: center; gap: 1rem; padding: 1rem; background: var(--pico-form-element-background-color); border-radius: var(--pico-border-radius);">
-                                <div style="flex: 1;">
-                                    <strong>Sync Status:</strong> <span x-text="getSyncStatusText()"></span>
-                                </div>
-                                <button @click="disableSync()" class="secondary outline"
-                                    style="margin: 0;">Disconnect</button>
-                            </div>
+                         <!-- JWT Token Section -->
+                         <div style="margin-top: 2rem;">
+                          <h4>Authentication</h4>
+                          
+                          <label style="display: block;">
+                              <strong>JWT Token</strong>
+                              <small style="display: block; margin-bottom: 0.5rem; color: #999;">
+                                  Your Clerk authentication token. Click "Copy" to copy to clipboard for testing.
+                              </small>
+                              <div style="display: flex; gap: 0.5rem;">
+                                  <textarea 
+                                      x-model="currentJwtToken" 
+                                      readonly
+                                      style="flex: 1; font-family: monospace; font-size: 0.75rem; background-color: #f5f5f5; color: #666; resize: vertical; min-height: 80px;"
+                                      @click="$event.target.select()"
+                                  ></textarea>
+                                  <button 
+                                      @click="copyJwtToken()"
+                                      style="align-self: flex-start; padding: 0.5rem 1rem; white-space: nowrap;"
+                                      class="secondary"
+                                  >
+                                      📋 Copy
+                                  </button>
+                              </div>
+                              <small x-show="jwtCopied" style="display: block; margin-top: 0.25rem; color: #27ae60;">
+                                  ✓ Copied to clipboard
+                              </small>
+                          </label>
+                         </div>
 
-                            <div x-show="syncError"
-                                style="margin-top: 1rem; padding: 1rem; background: var(--pico-del-background-color, #ffebee); color: var(--pico-del-color, #c62828); border-radius: var(--pico-border-radius);">
-                                <strong>⚠ Error:</strong> <span x-text="syncError"></span>
-                            </div>
-                        </div>
-                </section>
+                         </section>
 
                 <!-- Trash Section -->
                 <section x-show="settingsTab === 'trash'">
@@ -899,6 +939,38 @@
                     ✕
                 </button>
             </div>
+
+            <!-- Diagnostics Modal -->
+            <dialog x-show="showDiagnostics" @click.self="showDiagnostics = false" open>
+                <article>
+                    <header>
+                        <h2>JWT & MyCouch Diagnostics</h2>
+                        <button class="close" @click="showDiagnostics = false"></button>
+                    </header>
+                    
+                    <div x-show="!diagnosticsResults.error && !diagnosticsResults.jwtClaim" style="text-align: center;">
+                        <p>Loading...</p>
+                    </div>
+
+                    <div x-show="diagnosticsResults.error">
+                        <h3 style="color: var(--pico-form-element-invalid-border-color);">❌ Error</h3>
+                        <p x-text="diagnosticsResults.error"></p>
+                    </div>
+
+                    <div x-show="diagnosticsResults.jwtClaim">
+                        <h3>📋 JWT Claims</h3>
+                        <pre style="background: var(--pico-card-background-color); padding: 1rem; border-radius: var(--pico-border-radius); overflow-x: auto; font-size: 0.85em;"><code x-text="JSON.stringify(diagnosticsResults.jwtClaim, null, 2)"></code></pre>
+                        
+                        <h3>✅ MyCouch Response</h3>
+                        <pre x-show="diagnosticsResults.mycouchResponse" style="background: var(--pico-card-background-color); padding: 1rem; border-radius: var(--pico-border-radius); overflow-x: auto; font-size: 0.85em;"><code x-text="JSON.stringify(diagnosticsResults.mycouchResponse, null, 2)"></code></pre>
+                    </div>
+
+                    <footer style="text-align: right;">
+                        <button class="secondary" @click="showDiagnostics = false">Close</button>
+
+                    </footer>
+                </article>
+            </dialog>
         </main>
     </div>
 </body>

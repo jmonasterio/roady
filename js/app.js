@@ -37,6 +37,7 @@
         bandBeingEdited: { name: '' },
         bandNameOriginal: '',
         currentBandMembers: [],
+        isCreatingBand: false,  // Prevent double submission
         showInviteMemberDialog: false,
         inviteMemberEmail: '',
         inviteMemberRole: 'member',
@@ -86,12 +87,15 @@
             addedEquipmentName: ''
         },
         options: {
-            couchDbUrl: '',
-            mycouchBaseUrl: 'http://localhost:5985',
+            mycouchBaseUrl: 'http://argw.com:5985',
             tenantId: ''
         },
+        currentDbName: '',
+        currentJwtToken: '',
+        jwtCopied: false,
         syncStatus: 'idle',
         syncError: null,
+        syncRetryCount: 0,
 
         // Confirmation dialog state
         confirmationDialog: {
@@ -102,6 +106,14 @@
             cancelText: 'Cancel',
             action: null,
             isDangerous: false
+        },
+
+        // Diagnostics state
+        showDiagnostics: false,
+        diagnosticsResults: {
+            jwtClaim: null,
+            mycouchResponse: null,
+            error: null
         },
 
         // Snackbar state
@@ -156,6 +168,12 @@
 
             // 3. Load Options first (before tenant init, so we have mycouchBaseUrl)
             await this.loadOptions();
+            
+            // Set current database name based on environment
+            this.currentDbName = window.location.hostname === 'localhost' ? 'roady-staging' : 'roady';
+
+            // Load JWT token for display in settings
+            await this.loadJwtToken();
 
             // 4. Initialize Tenant Context with loaded options
             try {
@@ -205,12 +223,16 @@
             // Load current band details
             await this.loadBandDetails();
 
+            // Initialize PouchDB first
             await this.loadData();
             this.isLoading = false;
 
-            // 5. Setup Sync
+            // Note: Active tenant is now managed via session documents (per-device)
+            // No need to sync to server or refresh JWT - session service handles it
+
+            // 5. Setup Sync (uses mycouchBaseUrl, not couchDbUrl)
             this.setupSyncListeners();
-            if (this.options.couchDbUrl) {
+            if (this.options.mycouchBaseUrl) {
                 this.enableSync();
             }
 
@@ -311,24 +333,30 @@
                 console.log('📦 Loaded options from storage:', saved);
                 if (saved && Object.keys(saved).length > 0) {
                     this.options = saved;
-                    console.log('✅ Options loaded:', this.options);
+                    console.log('✅ Options loaded from storage:', this.options);
+                } else {
+                    console.log('📦 No saved options found');
+                }
+
+                // Migration: Remove couchDbUrl (use only mycouchBaseUrl)
+                if (this.options.couchDbUrl) {
+                    console.log('🔧 Removing deprecated couchDbUrl from options');
+                    delete this.options.couchDbUrl;
                 }
 
                 // Set defaults if missing
                 if (!this.options.mycouchBaseUrl) {
                     console.log('🔧 Setting default MyCouch URL');
-                    this.options.mycouchBaseUrl = 'http://localhost:5985';
+                    this.options.mycouchBaseUrl = 'http://argw.com:5985';
                 }
                 
-                if (!this.options.couchDbUrl) {
-                    console.log('🔧 Setting default CouchDB URL');
-                    this.options.couchDbUrl = 'http://localhost:5985/roady';
-                }
-                
-                console.log('📦 Final options before TenantManager init:', this.options);
+                console.log('📦 Final options:', {
+                    mycouchBaseUrl: this.options.mycouchBaseUrl,
+                    tenantId: this.options.tenantId
+                });
                 
                 // Save if any defaults were set
-                if (!saved || !saved.mycouchBaseUrl || !saved.couchDbUrl) {
+                if (!saved || !saved.mycouchBaseUrl) {
                     await this.saveOptions();
                 }
             } catch (e) {
@@ -343,35 +371,146 @@
                 console.error('Failed to save options:', e);
             }
 
-            // Update sync when URL changes
-            if (this.options.couchDbUrl && this.options.couchDbUrl.trim()) {
+            // Update TenantManager if MyCouch URL changed
+            if (window.tenantManager && this.options.mycouchBaseUrl) {
+                const oldUrl = window.tenantManager.mycouchBaseUrl;
+                if (oldUrl !== this.options.mycouchBaseUrl) {
+                    console.log('🔗 MyCouch URL changed, updating TenantManager:', this.options.mycouchBaseUrl);
+                    window.tenantManager.mycouchBaseUrl = this.options.mycouchBaseUrl;
+                    
+                    // Restart retry loop with new URL
+                    if (this.retryInterval) {
+                        clearInterval(this.retryInterval);
+                        this.startBackgroundRetry();
+                    }
+                }
+            }
+
+            // Update sync when URL changes (sync uses mycouchBaseUrl)
+            if (this.options.mycouchBaseUrl && this.options.mycouchBaseUrl.trim()) {
                 this.enableSync();
             } else {
                 this.disableSync();
             }
         },
 
-        // Sync methods
-        async enableSync() {
-            if (!this.options.couchDbUrl) return;
-
-            this.syncError = null;
-            const success = await Sync.setupSync(DB.getDb(), this.options.couchDbUrl);
-
-            if (!success) {
-                this.syncError = 'Failed to connect to CouchDB server. Check URL.';
+        async loadJwtToken() {
+            try {
+                // Request token - use standard Clerk session token
+                const token = await window.Clerk?.session?.getToken?.();
+                if (token) {
+                    this.currentJwtToken = token;
+                    console.log('✅ JWT token loaded for settings display');
+                } else {
+                    console.warn('⚠️ Could not get JWT token from Clerk');
+                    this.currentJwtToken = '(No token available)';
+                }
+            } catch (e) {
+                console.error('Failed to load JWT token:', e);
+                this.currentJwtToken = '(Error loading token)';
             }
         },
 
+        async copyJwtToken() {
+            try {
+                await navigator.clipboard.writeText(this.currentJwtToken);
+                this.jwtCopied = true;
+                setTimeout(() => {
+                    this.jwtCopied = false;
+                }, 2000);
+                console.log('✅ JWT token copied to clipboard');
+            } catch (e) {
+                console.error('Failed to copy JWT token:', e);
+                alert('Failed to copy token to clipboard');
+            }
+        },
+
+        // Sync methods
+        async enableSync() {
+            console.log('📡 enableSync called with mycouchBaseUrl:', this.options.mycouchBaseUrl);
+            
+            if (!this.options.mycouchBaseUrl) {
+                console.warn('⚠️ enableSync: no mycouchBaseUrl in options');
+                return;
+            }
+            
+            // Guard against Sync not being loaded
+            if (!window.Sync) {
+                console.warn('⚠️ Sync module not loaded yet, deferring sync setup');
+                setTimeout(() => this.enableSync(), 100);
+                return;
+            }
+
+            this.syncError = null;
+            // Construct sync URL from MyCouch proxy base URL
+            // Determine database name based on environment
+            const dbName = window.location.hostname === 'localhost' ? 'roady-staging' : 'roady';
+            const syncUrl = `${this.options.mycouchBaseUrl}/${dbName}`;
+            console.log('📡 Calling Sync.setupSync with:', syncUrl);
+            
+            // Non-blocking sync setup with automatic retry
+            // If MyCouch is offline, sync will fail gracefully and retry in background
+            // App continues working with local PouchDB data
+            Sync.setupSync(DB.getDb(), syncUrl)
+                .then(success => {
+                    if (!success) {
+                        console.warn('⚠️ Sync setup failed - will retry in background');
+                        this.syncError = 'Sync not available (offline or server unreachable)';
+                        // Retry sync setup in background
+                        this.scheduleRetrySync(syncUrl);
+                    } else {
+                        console.log('✅ Sync setup succeeded');
+                        this.syncError = null;
+                    }
+                })
+                .catch(error => {
+                    console.error('❌ Sync setup error:', error.message);
+                    this.syncError = 'Sync connection failed - retrying in background';
+                    // Retry sync setup in background
+                    this.scheduleRetrySync(syncUrl);
+                });
+        },
+
+        scheduleRetrySync(syncUrl) {
+            // Exponential backoff: 5s, 10s, 20s, 30s, 30s...
+            const baseDelay = 5000; // 5 seconds
+            const maxDelay = 30000; // 30 seconds
+            const retryCount = this.syncRetryCount || 0;
+            const delay = Math.min(baseDelay * Math.pow(2, retryCount), maxDelay);
+            
+            console.log(`📡 Scheduling sync retry in ${delay}ms (attempt ${retryCount + 1})`);
+            setTimeout(() => {
+                this.syncRetryCount = (this.syncRetryCount || 0) + 1;
+                Sync.setupSync(DB.getDb(), syncUrl)
+                    .then(success => {
+                        if (success) {
+                            console.log('✅ Sync reconnected!');
+                            this.syncError = null;
+                            this.syncRetryCount = 0; // Reset on success
+                        } else {
+                            this.scheduleRetrySync(syncUrl); // Retry again
+                        }
+                    })
+                    .catch(error => {
+                        console.warn('⚠️ Sync retry failed:', error.message);
+                        this.scheduleRetrySync(syncUrl); // Retry again
+                    });
+            }, delay);
+        },
+
         disableSync() {
-            Sync.cancelSync();
+            if (window.Sync) {
+                Sync.cancelSync();
+            }
             this.syncStatus = 'idle';
             this.syncError = null;
         },
 
+
+
         setupSyncListeners() {
             window.addEventListener('db-sync-change', (e) => {
-                this.syncStatus = Sync.getSyncStatus();
+                this.syncStatus = window.Sync ? Sync.getSyncStatus() : 'idle';
                 // Reload data when sync receives changes
                 this.loadData();
                 this.loadDeletedItems();
@@ -379,11 +518,11 @@
 
             window.addEventListener('db-sync-error', (e) => {
                 this.syncError = `Sync error: ${e.detail.error.message || 'Unknown error'}`;
-                this.syncStatus = Sync.getSyncStatus();
+                this.syncStatus = window.Sync ? Sync.getSyncStatus() : 'idle';
             });
 
             window.addEventListener('db-sync-paused', (e) => {
-                this.syncStatus = Sync.getSyncStatus();
+                this.syncStatus = window.Sync ? Sync.getSyncStatus() : 'idle';
             });
         },
 
@@ -1242,6 +1381,18 @@
             }
         },
 
+        /**
+         * Extract virtual tenant ID from local storage format
+         * Local PouchDB stores as tenant_<uuid>, but APIs need just <uuid>
+         */
+        getVirtualTenantId(tenantId) {
+            if (!tenantId) return tenantId;
+            if (tenantId.startsWith('tenant_')) {
+                return tenantId.substring(7);  // Remove "tenant_" prefix
+            }
+            return tenantId;
+        },
+
         openCreateBandDialog() {
             this.newBandName = '';
             this.showCreateBandDialog = true;
@@ -1253,33 +1404,51 @@
                 return;
             }
 
+            // Prevent double submission (e.g., Enter key + button click)
+            if (this.isCreatingBand) {
+                console.warn('⚠️ Band creation already in progress, ignoring duplicate request');
+                return;
+            }
+            this.isCreatingBand = true;
+
             try {
                 const token = await Clerk.session?.getToken();
                 if (!token) {
                     console.error('No auth token available');
                     this.showSnackbar('Authentication error: Please sign in again', 'error');
+                    this.isCreatingBand = false;
                     return;
                 }
                 
-                console.log('Creating band with token:', token.substring(0, 20) + '...');
-                const response = await fetch(`${this.options.mycouchBaseUrl}/__tenants`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
-                    },
-                    body: JSON.stringify({ name: this.newBandName })
-                });
+                const bandName = this.newBandName;
+                
+                // CRITICAL: Create tenant via /__tenants endpoint (PouchDB)
+                // This ensures the tenant is properly registered in couch-sitter with applicationId
+                // so it can be deleted cleanly via DELETE /__tenants
+                try {
+                    console.log('📤 Creating tenant via /__tenants endpoint:', bandName);
+                    const response = await fetch(`${this.options.mycouchBaseUrl}/__tenants`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({ name: bandName })
+                    });
 
-                if (response.ok) {
-                    const data = await response.json();
-                    const newBandId = data._id || data.tenantId || data.id;
+                    if (!response.ok) {
+                        const error = await response.json();
+                        throw new Error(error.detail || 'Failed to create tenant');
+                    }
+
+                    const tenantResponse = await response.json();
+                    const newBandId = tenantResponse._id; // Use the tenant ID from server
+                    console.log('✅ Tenant created via backend:', tenantResponse);
                     
                     this.showCreateBandDialog = false;
-                    const bandName = this.newBandName;
                     this.newBandName = '';
                     
-                    // Create band-info document in the new tenant
+                    // Create band-info document in the new tenant's roady database
                     try {
                         const currentTenant = DB.tenant;
                         DB.setTenant(newBandId);
@@ -1292,47 +1461,54 @@
                         console.error('❌ Failed to create band-info for', newBandId, ':', e);
                     }
                     
-                    // Immediately add new band to local list to avoid race condition
-                    // Use _id to match the virtual endpoint response format
-                    const newBand = {
-                        _id: newBandId,
-                        tenantId: newBandId,  // Keep for backwards compatibility
-                        name: data.name || bandName,
+                    // Construct tenant doc for local PouchDB (must match server format)
+                    const newTenant = {
+                        _id: `tenant_${newBandId}`,  // Internal format for local storage
+                        type: 'tenant',
+                        tenantId: newBandId,  // Virtual ID
+                        name: bandName,
                         bandName: bandName,
                         role: 'owner',
                         personal: false,
-                        memberCount: 1
+                        memberCount: 1,
+                        createdAt: new Date().toISOString(),
+                        syncedAt: new Date().toISOString()
                     };
-                    this.userBands.push(newBand);
                     
-                    // Also add to tenantManager's tenantList so switchTenant can find it
-                    if (window.tenantManager) {
-                        window.tenantManager.tenantList.push(newBand);
+                    // Save to local PouchDB so it syncs back to server
+                    if (window.tenantManager?.tenantsDb) {
+                        try {
+                            await window.tenantManager.tenantsDb.put(newTenant);
+                            console.log('✅ Saved new tenant to local PouchDB:', newTenant);
+                        } catch (e) {
+                            console.warn('⚠️ Failed to save to local PouchDB:', e);
+                            // Continue anyway - band was created on server
+                        }
                     }
-                    console.log('✅ Added new band to local lists:', newBand);
                     
-                    // Reload bands list in background (no await to avoid delay)
-                    // This will refresh with server data and sync any changes
-                    this.loadBands().catch(e => console.error('Background band reload failed:', e));
+                    // Add new band to local app state
+                    this.userBands.push(newTenant);
+                    
+                    // Also add to tenantManager's tenantList
+                    if (window.tenantManager) {
+                        window.tenantManager.tenantList.push(newTenant);
+                    }
+                    console.log('✅ Added new band to local lists:', newTenant);
                     
                     // Switch to new band (becomes active in JWT)
                     await this.switchBand(newBandId);
                     this.showSnackbar(`Created new band: ${bandName}`);
-                } else {
-                    let errorMsg = `Failed to create band (${response.status})`;
-                    try {
-                        const error = await response.json();
-                        errorMsg = error.message || errorMsg;
                     } catch (e) {
-                        // Response wasn't JSON, use status message
+                    console.error('❌ Failed to create band via backend:', e);
+                    this.showSnackbar('Error creating band: ' + e.message, 'error');
+                    } finally {
+                    this.isCreatingBand = false;
                     }
-                    console.error('Band creation error:', response.status, errorMsg);
-                    this.showSnackbar(errorMsg, 'error');
-                }
-            } catch (e) {
-                console.error('Error creating band:', e);
-                this.showSnackbar('Error creating band', 'error');
-            }
+                    } catch (e) {
+                    console.error('Error creating band:', e);
+                    this.showSnackbar('Error creating band', 'error');
+                    this.isCreatingBand = false;
+                    }
         },
 
         // Band settings methods
@@ -1482,37 +1658,73 @@
                 const bandToDelete = this.userBands.find(b => b._id === this.currentBandTenantId);
                 const deletedBandName = bandToDelete?.bandName || bandToDelete?.name || 'Unknown Band';
                 
-                // Delete via /__tenants endpoint
-                // Backend must verify: user owns the tenant AND no other members in the band
-                const token = await Clerk.session?.getToken();
-                const response = await fetch(`${this.options.mycouchBaseUrl}/__tenants/${this.currentBandTenantId}`, {
-                    method: 'DELETE',
-                    headers: {
-                        'Authorization': `Bearer ${token}`
+                const now = new Date().toISOString();
+                
+                // LOCAL-FIRST PATTERN: Soft-delete locally first, let sync handle server
+                // Do NOT make direct API calls - let PouchDB replicate changes to server
+                
+                // 1. Soft-delete tenant document in local PouchDB
+                if (window.tenantManager?.tenantsDb) {
+                    try {
+                        const virtualTenantId = this.getVirtualTenantId(this.currentBandTenantId);
+                        const internalId = `tenant_${virtualTenantId}`;
+                        const doc = await window.tenantManager.tenantsDb.get(internalId);
+                        // Use deletedAt field to match server (not deleted: true)
+                        doc.deletedAt = now;
+                        doc.updatedAt = now;
+                        await window.tenantManager.tenantsDb.put(doc);
+                        console.log('✅ Marked local tenant as soft-deleted:', internalId);
+                    } catch (e) {
+                        if (e.status === 404) {
+                            console.log('ℹ️ Tenant not in local PouchDB (may not have synced yet)');
+                        } else {
+                            console.warn('⚠️ Could not soft-delete tenant in local PouchDB:', e);
+                            throw e; // Don't continue if we can't mark deletion
+                        }
                     }
-                });
-
-                if (response.ok || response.status === 204) {
-                    // Remove from userBands list
-                    this.userBands = this.userBands.filter(b => b._id !== this.currentBandTenantId);
-                    
-                    // Switch to first available band
-                    if (this.userBands.length > 0) {
-                        this.currentBandTenantId = this.userBands[0]._id;
-                        this.updateCurrentBandName();
-                        DB.setTenant(this.userBands[0]._id);
-                        await this.loadData();
-                        await this.loadBandDetails();
-                    }
-                    
-                    this.showSnackbar(`Band "${deletedBandName}" has been deleted`);
-                } else {
-                    const error = await response.json();
-                    this.showSnackbar(`Failed to delete band: ${error.detail || 'Unknown error'}`, 'error');
                 }
+                
+                // 2. Soft-delete all band documents in local roady database
+                try {
+                    const db = DB.getDb();
+                    const allDocs = await db.allDocs({include_docs: true});
+                    const bandDocs = allDocs.rows
+                        .map(row => row.doc)
+                        .filter(doc => doc.tenant === this.currentBandTenantId)
+                        .map(doc => ({
+                            ...doc, 
+                            deletedAt: now,
+                            updatedAt: now
+                        }));
+                    
+                    if (bandDocs.length > 0) {
+                        await db.bulkDocs(bandDocs);
+                        console.log('✅ Soft-deleted', bandDocs.length, 'documents for band:', this.currentBandTenantId);
+                    }
+                } catch (e) {
+                    console.warn('⚠️ Could not soft-delete band documents:', e);
+                    throw e; // Don't continue if local DB save fails
+                }
+                
+                // 3. Update UI (remove from userBands list)
+                this.userBands = this.userBands.filter(b => b._id !== this.currentBandTenantId);
+                
+                // 4. Switch to first available band
+                if (this.userBands.length > 0) {
+                    this.currentBandTenantId = this.userBands[0]._id;
+                    this.updateCurrentBandName();
+                    DB.setTenant(this.userBands[0]._id);
+                    await this.loadData();
+                    await this.loadBandDetails();
+                }
+                
+                // 5. PouchDB sync will replicate soft-deleted documents to server automatically
+                console.log('ℹ️ Band soft-deleted locally. PouchDB sync will replicate changes to server.');
+                this.showSnackbar(`Band "${deletedBandName}" has been deleted`);
+                
             } catch (e) {
                 console.error('Error deleting band:', e);
-                this.showSnackbar('Error deleting band', 'error');
+                this.showSnackbar('Error deleting band. Changes not saved.', 'error');
             }
         }
     }));

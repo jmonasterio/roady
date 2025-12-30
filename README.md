@@ -58,7 +58,7 @@ Roady requires the `active_tenant_id` claim in the session token to support mult
 
 ```json
 {
-  "active_tenant_id": "{{session.public_metadata.active_tenant_id}}"
+  "active_tenant_id": "{{user.public_metadata.active_tenant_id}}"
 }
 ```
 

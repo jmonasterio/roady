@@ -3,14 +3,17 @@ window.Sync = {
     syncHandler: null,
     syncStatus: 'idle', // idle, active, paused, error, complete
 
-    // Setup sync with remote CouchDB
-    async setupSync(localDb, couchDbUrl) {
-        if (!couchDbUrl || !couchDbUrl.trim()) {
+    // Setup sync with remote CouchDB via MyCouch proxy
+    async setupSync(localDb, remoteDbUrl) {
+        console.log('🔍 setupSync called with:', {remoteDbUrl, type: typeof remoteDbUrl, length: remoteDbUrl?.length});
+        
+        if (!remoteDbUrl || !remoteDbUrl.trim()) {
+            console.warn('⚠️ setupSync: remoteDbUrl is empty or whitespace');
             this.cancelSync();
             return false;
         }
 
-        console.log('[setupSync] Starting sync setup with URL:', couchDbUrl);
+        console.log('[setupSync] Starting sync setup with MyCouch URL:', remoteDbUrl);
 
         // Wait for auth to be ready (up to 30 seconds)
         console.log('[setupSync] Waiting for Auth to be ready...');
@@ -26,40 +29,79 @@ window.Sync = {
             return false;
         }
 
+        // Validate JWT has required active_tenant_id claim
+        try {
+            const jwt = await window.Auth?.getToken?.();
+            if (jwt) {
+                const parts = jwt.split('.');
+                if (parts.length === 3) {
+                    const payload = JSON.parse(atob(parts[1]));
+                    if (!payload.active_tenant_id) {
+                        console.error('❌ Cannot setup sync: JWT missing active_tenant_id claim. Clerk Dashboard not configured with JWT custom claims.');
+                        window.dispatchEvent(new CustomEvent('db-sync-error', {
+                            detail: { error: { message: 'Clerk Dashboard not configured - missing JWT custom claim for active_tenant_id' } }
+                        }));
+                        return false;
+                    }
+                }
+            }
+        } catch (err) {
+            console.warn('⚠️ Could not validate JWT claim:', err);
+            // Don't block sync if we can't validate - server will reject bad JWT anyway
+        }
+
         // Cancel existing sync if any
         this.cancelSync();
 
         try {
             // Ensure URL doesn't end with slash
-            const baseUrl = couchDbUrl.replace(/\/$/, '');
+            const baseUrl = remoteDbUrl.replace(/\/$/, '');
+
+            // Extract database name from the MyCouch URL
+            // remoteDbUrl format: http://argw.com:5985/roady or http://argw.com:5985/roady-staging
+            const potentialDbName = baseUrl.split('/')[baseUrl.split('/').length - 1];
+            if (!potentialDbName || potentialDbName.trim() === '') {
+                throw new Error('Invalid remoteDbUrl: missing database name. URL must be like http://example.com:5985/databasename');
+            }
 
             // Configure remote DB options with authentication
             const remoteOptions = {
                 skip_setup: true, // Don't try to create DB if it doesn't exist
                 fetch: async (url, opts) => {
                     try {
-                        console.debug('[Sync fetch]', {
-                            url,
-                            method: opts.method || 'GET',
-                            hasAuth: !!opts.headers?.Authorization,
-                            userAuthenticated: window.Auth?.isAuthenticated()
-                        });
-
                         // Add auth token to all sync requests
                         const authenticatedOpts = await window.Auth.authenticatedFetch(url, opts);
-                        return PouchDB.fetch(url, authenticatedOpts);
+                        console.debug('[Sync fetch]', {
+                            url,
+                            method: authenticatedOpts.method || 'GET',
+                            hasAuth: !!authenticatedOpts.headers?.Authorization,
+                            userAuthenticated: window.Auth?.isAuthenticated()
+                        });
+                        return fetch(url, authenticatedOpts);
                     } catch (err) {
                         console.warn('[Sync fetch] Could not get auth token for sync:', err);
-                        return PouchDB.fetch(url, opts);
+                        return fetch(url, opts);
                     }
                 }
             };
 
-            const remoteDB = new PouchDB(`${baseUrl}/roady`, remoteOptions);
+            // remoteDbUrl is already the full URL including database name from the parameter
+            const remoteDB = new PouchDB(remoteDbUrl, remoteOptions);
 
-            // Test connection first
-            await remoteDB.info();
-            console.log('✓ Remote DB connected');
+            // Test connection first (with timeout to fail fast if offline)
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 2000);
+                
+                await remoteDB.info();
+                clearTimeout(timeoutId);
+                console.log('✓ Remote DB connected');
+            } catch (connectionError) {
+                // Connection test failed - likely offline or server unreachable
+                // Don't spam console with error - this is expected when offline
+                console.warn('⚠️ MyCouch not reachable yet (offline or server down)');
+                throw connectionError;  // Still throw so calling code knows sync failed
+            }
 
             // Setup bidirectional continuous sync
             this.syncHandler = localDb.sync(remoteDB, {
@@ -109,14 +151,27 @@ window.Sync = {
                     }));
                 });
 
-            console.log('CouchDB sync setup complete for:', baseUrl);
+            console.log('MyCouch sync setup complete for:', baseUrl);
             return true;
         } catch (err) {
-            console.error('Failed to setup CouchDB sync:', err);
+            // Network errors expected when offline - don't log as error
+            const isNetworkError = err.message?.includes('Failed to fetch') || 
+                                   err.name === 'AbortError' ||
+                                   err.message?.includes('ERR_CONNECTION_REFUSED');
+            
+            if (isNetworkError) {
+                console.debug('ℹ️ MyCouch sync not available (offline):', err.message);
+            } else {
+                console.error('Failed to setup MyCouch sync:', err);
+            }
+            
             this.syncStatus = 'error';
-            window.dispatchEvent(new CustomEvent('db-sync-error', {
-                detail: { error: { message: 'Connection failed. Check CORS settings and URL format.' } }
-            }));
+            // Don't dispatch error event for expected network failures
+            if (!isNetworkError) {
+                window.dispatchEvent(new CustomEvent('db-sync-error', {
+                    detail: { error: { message: 'Connection failed. Check MyCouch proxy is running and reachable.' } }
+                }));
+            }
             return false;
         }
     },
@@ -129,7 +184,7 @@ window.Sync = {
             this.syncStatus = 'idle';
             window.dispatchEvent(new CustomEvent('db-sync-cancelled'));
         }
-        console.log('CouchDB sync cancelled');
+        console.log('MyCouch sync cancelled');
     },
 
     // Get sync status

@@ -5,8 +5,11 @@ const DB = {
     currentTenant: null, // Will be set by TenantManager
 
     init() {
+        // Determine database name based on environment
+        const dbName = window.location.hostname === 'localhost' ? 'roady-staging' : 'roady';
+        
         // Initialize local PouchDB without auth (auth handled at higher level)
-        this.db = new PouchDB('roady');
+        this.db = new PouchDB(dbName);
 
         // These are local indexDB only.
         this.optionsDb = new PouchDB('roady_options'); // Local-only, never synced

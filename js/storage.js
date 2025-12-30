@@ -1,7 +1,7 @@
 // High-level storage API that combines database, auth, and sync
 const Storage = {
     // Initialize storage with authentication and sync
-    async init(couchDbUrl = null) {
+    async init(mycouchBaseUrl = null) {
         console.log('🚀 Initializing Storage with auth and sync...');
 
         // Wait for authentication to be ready
@@ -11,10 +11,13 @@ const Storage = {
             return false;
         }
 
-        // Setup sync if URL provided
-        if (couchDbUrl) {
+        // Setup sync if MyCouch URL provided
+        if (mycouchBaseUrl) {
             const db = window.DB.getDb();
-            const syncSuccess = await window.Sync.setupSync(db, couchDbUrl);
+            // Construct full database URL from MyCouch base URL
+            const dbName = window.location.hostname === 'localhost' ? 'roady-staging' : 'roady';
+            const remoteDbUrl = `${mycouchBaseUrl}/${dbName}`;
+            const syncSuccess = await window.Sync.setupSync(db, remoteDbUrl);
             if (syncSuccess) {
                 console.log('✓ Storage: Sync initialized successfully');
                 return true;

@@ -28,7 +28,8 @@ window.ClerkAuth = {
                 await this.waitForClerk();
             }
 
-            // Get the token - try to get a fresh one with tenant metadata
+            // Get the token - use standard session token
+            // Note: TTL is determined by Clerk configuration (typically 1 hour)
             let jwt = await window.Clerk?.session?.getToken();
             if (!jwt) {
                 console.warn('Clerk session exists but getToken() returned null/undefined');

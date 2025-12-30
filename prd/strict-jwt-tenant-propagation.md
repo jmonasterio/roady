@@ -22,8 +22,8 @@ The Clerk Dashboard must be configured to inject the `active_tenant_id` from the
 **Claims Mapping**:
 ```json
 {
-  "active_tenant_id": "{{session.public_metadata.active_tenant_id}}",
-  "tenant_id": "{{session.public_metadata.active_tenant_id}}"
+  "active_tenant_id": "{{user.public_metadata.active_tenant_id}}",
+  "tenant_id": "{{user.public_metadata.active_tenant_id}}"
 }
 ```
 
