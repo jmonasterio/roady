@@ -38,9 +38,17 @@
         bandNameOriginal: '',
         currentBandMembers: [],
         isCreatingBand: false,  // Prevent double submission
+        
+        // Invitation state (Members tab)
         showInviteMemberDialog: false,
+        showGeneratedInviteLink: false,
         inviteMemberEmail: '',
-        inviteMemberRole: 'member',
+        inviteMemberRole: 'editor',
+        generatedInviteLink: '',
+        generatedInviteToken: '',
+        inviteMessageTemplate: '',
+        inviteCopied: false,
+        messageCopied: false,
 
         // Authentication state
         isAuthenticated: false,
@@ -124,9 +132,111 @@
             timeout: null
         },
 
+        // Check for pending invitation token in sessionStorage
+        checkPendingInvitation() {
+            const pendingToken = sessionStorage.getItem('pendingInviteToken');
+            if (pendingToken) {
+                console.log('📬 Found pending invitation token in sessionStorage');
+                return pendingToken;
+            }
+            return null;
+        },
+
+        // Parse invite_token from URL and store in sessionStorage
+        // This runs BEFORE Clerk auth, so token survives the redirect
+        parseInviteTokenFromUrl() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const inviteToken = urlParams.get('invite_token');
+            
+            if (inviteToken) {
+                console.log('🔗 Parsing invite_token from URL');
+                sessionStorage.setItem('pendingInviteToken', inviteToken);
+                
+                // Clean URL (remove the token parameter)
+                const newUrl = new URL(window.location);
+                newUrl.searchParams.delete('invite_token');
+                window.history.replaceState({}, document.title, newUrl);
+                
+                return inviteToken;
+            }
+            return null;
+        },
+
+        // Accept invitation after user is authenticated
+        async acceptPendingInvitation(token) {
+            try {
+                console.log('📬 Accepting pending invitation...');
+                const authToken = await Clerk.session?.getToken();
+                if (!authToken) {
+                    console.warn('⚠️ No auth token available for accepting invitation');
+                    return false;
+                }
+
+                const response = await fetch(`${this.options.mycouchBaseUrl}/api/invitations/accept`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${authToken}`
+                    },
+                    body: JSON.stringify({ token })
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log('✅ Invitation accepted:', result);
+                    
+                    // Clear the token from sessionStorage
+                    sessionStorage.removeItem('pendingInviteToken');
+                    
+                    // Reload bands to show new band membership
+                    await this.loadBands();
+                    
+                    // Switch to the new band if it was just joined
+                    if (result.tenantId) {
+                        this.currentBandTenantId = result.tenantId;
+                        DB.setTenant(result.tenantId);
+                        await this.loadBandDetails();
+                        await this.loadData();
+                        console.log('✅ Switched to joined band:', result.tenantId);
+                    }
+                    
+                    this.showSnackbar('Successfully joined the band!');
+                    return true;
+                } else if (response.status === 404) {
+                    console.warn('⚠️ Invitation token not found or expired');
+                    sessionStorage.removeItem('pendingInviteToken');
+                    this.showSnackbar('Invitation link expired or invalid', 'error');
+                    return false;
+                } else if (response.status === 409) {
+                    console.warn('⚠️ You are already a member of this band');
+                    sessionStorage.removeItem('pendingInviteToken');
+                    await this.loadBands();
+                    this.showSnackbar('You are already a member of this band');
+                    return true; // Not an error, user is already in
+                } else if (response.status === 410) {
+                    console.warn('⚠️ Invitation has been revoked');
+                    sessionStorage.removeItem('pendingInviteToken');
+                    this.showSnackbar('Invitation has been revoked', 'error');
+                    return false;
+                } else {
+                    const error = await response.json();
+                    throw new Error(error.detail || `Server error: ${response.status}`);
+                }
+            } catch (e) {
+                console.error('❌ Error accepting invitation:', e);
+                this.showSnackbar('Error accepting invitation: ' + e.message, 'error');
+                return false;
+            }
+        },
+
         // Initialize
         async init() {
             console.log('🚀 Roady App Initializing...');
+            
+            // CRITICAL: Parse invite token BEFORE Clerk init
+            // This ensures token survives Clerk's redirect
+            this.parseInviteTokenFromUrl();
+            
             this.isLoading = true;
 
             // 1. Wait for Clerk to load
@@ -231,6 +341,15 @@
 
             // Initialize PouchDB first
             await this.loadData();
+            
+            // CRITICAL: Accept pending invitation if one exists
+            // This must happen AFTER Clerk auth, tenant init, and options loading
+            const pendingToken = this.checkPendingInvitation();
+            if (pendingToken) {
+                console.log('📬 Processing pending invitation acceptance...');
+                await this.acceptPendingInvitation(pendingToken);
+            }
+            
             this.isLoading = false;
 
             // Note: Active tenant is now managed via session documents (per-device)
@@ -1591,38 +1710,144 @@
             }
         },
 
-        async inviteMember() {
-            if (!this.inviteMemberEmail.trim()) {
-                this.showSnackbar('Email address is required', 'error');
-                return;
-            }
+        openInviteMemberDialog() {
+            this.inviteMemberEmail = '';
+            this.inviteMemberRole = 'editor';
+            this.showInviteMemberDialog = true;
+        },
 
+        async inviteMember() {
+            // Email is optional (just for reference)
             try {
                 const token = await Clerk.session?.getToken();
-                const response = await fetch(`${this.options.mycouchBaseUrl}/invite`, {
+                const virtualTenantId = this.getVirtualTenantId(this.currentBandTenantId);
+                
+                const response = await fetch(`${this.options.mycouchBaseUrl}/api/tenants/${virtualTenantId}/invitations`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${token}`
                     },
-                    body: JSON.stringify({ email: this.inviteMemberEmail, role: this.inviteMemberRole, tenantId: this.currentBandTenantId })
+                    body: JSON.stringify({ 
+                        email: this.inviteMemberEmail, 
+                        role: this.inviteMemberRole 
+                    })
                 });
 
-                if (response.ok) {
-                    this.showInviteMemberDialog = false;
-                    this.inviteMemberEmail = '';
-                    this.inviteMemberRole = 'member';
-                    this.showSnackbar(`Invitation sent to ${this.inviteMemberEmail}`);
-                    
-                    // Reload band details
-                    await this.loadBandDetails();
-                } else {
+                if (!response.ok) {
                     const error = await response.json();
-                    this.showSnackbar(`Failed to invite member: ${error.detail || 'Unknown error'}`, 'error');
+                    throw new Error(error.detail || 'Failed to generate invitation');
                 }
+
+                const invitationData = await response.json();
+                console.log('✅ Invitation created:', invitationData);
+
+                // Generate shareable link with token
+                const inviteToken = invitationData.token || invitationData.id;
+                const baseUrl = window.location.origin + '/roady';
+                this.generatedInviteLink = `${baseUrl}?invite_token=${inviteToken}`;
+                this.generatedInviteToken = inviteToken;
+                
+                // Create message template
+                const bandName = this.currentBandName || 'my band';
+                this.inviteMessageTemplate = `Join my band on Roady!\n\n${this.generatedInviteLink}\n\nClick the link above to accept the invitation and start collaborating with ${bandName}.`;
+                
+                // Show link sharing dialog
+                this.showInviteMemberDialog = false;
+                this.showGeneratedInviteLink = true;
+                
+                console.log('✅ Invitation link generated');
             } catch (e) {
                 console.error('Error inviting member:', e);
-                this.showSnackbar('Error inviting member', 'error');
+                this.showSnackbar('Error generating invitation: ' + e.message, 'error');
+            }
+        },
+
+        resetInviteForm() {
+            this.inviteMemberEmail = '';
+            this.inviteMemberRole = 'editor';
+            this.generatedInviteLink = '';
+            this.generatedInviteToken = '';
+            this.inviteMessageTemplate = '';
+        },
+
+        async copyInviteLink() {
+            try {
+                await navigator.clipboard.writeText(this.generatedInviteLink);
+                this.inviteCopied = true;
+                setTimeout(() => {
+                    this.inviteCopied = false;
+                }, 2000);
+                console.log('✅ Invite link copied to clipboard');
+            } catch (e) {
+                console.error('Failed to copy invite link:', e);
+                this.showSnackbar('Failed to copy link', 'error');
+            }
+        },
+
+        async copyInviteMessage() {
+            try {
+                await navigator.clipboard.writeText(this.inviteMessageTemplate);
+                this.messageCopied = true;
+                setTimeout(() => {
+                    this.messageCopied = false;
+                }, 2000);
+                console.log('✅ Invite message copied to clipboard');
+            } catch (e) {
+                console.error('Failed to copy invite message:', e);
+                this.showSnackbar('Failed to copy message', 'error');
+            }
+        },
+
+        async confirmRemoveMember(member) {
+            const memberEmail = member.email || member.name || 'Unknown User';
+            const confirmed = await this.showConfirmation(
+                'Remove Member',
+                `Are you sure you want to remove ${memberEmail} from ${this.currentBandName}?`,
+                'Remove',
+                true
+            );
+
+            if (confirmed) {
+                await this.removeMember(member);
+            }
+        },
+
+        async removeMember(member) {
+            try {
+                const token = await Clerk.session?.getToken();
+                const virtualTenantId = this.getVirtualTenantId(this.currentBandTenantId);
+                const userId = member.userId;
+
+                const response = await fetch(`${this.options.mycouchBaseUrl}/api/tenants/${virtualTenantId}/members/${userId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    if (response.status === 403) {
+                        this.showSnackbar('You do not have permission to remove members', 'error');
+                    } else {
+                        const error = await response.json();
+                        throw new Error(error.detail || 'Failed to remove member');
+                    }
+                    return;
+                }
+
+                // Remove from local list
+                this.currentBandMembers = this.currentBandMembers.filter(m => m.userId !== userId);
+                
+                const memberEmail = member.email || member.name || 'Unknown User';
+                this.showSnackbar(`Removed ${memberEmail} from the band`);
+                console.log('✅ Member removed:', userId);
+                
+                // Reload band details to sync
+                await this.loadBandMembers();
+            } catch (e) {
+                console.error('Error removing member:', e);
+                this.showSnackbar('Error removing member: ' + e.message, 'error');
             }
         },
 

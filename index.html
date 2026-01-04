@@ -108,6 +108,8 @@
                         :class="{ active: currentView === 'equipment' && equipmentTab === 'catalog' }">Equipment</a></li>
                 <li><a href="#" @click.prevent="currentView = 'equipment'; equipmentTab = 'templates'"
                         :class="{ active: currentView === 'equipment' && equipmentTab === 'templates' }">Templates</a></li>
+                <li><a href="#" @click.prevent="currentView = 'members'"
+                        :class="{ active: currentView === 'members' }">Members</a></li>
                 <li><a href="#" @click.prevent="currentView = 'settings'"
                         :class="{ active: currentView === 'settings' }">Settings</a></li>
                 <li><a href="#" @click.prevent="currentView = 'bands'"
@@ -656,6 +658,117 @@
                     </div>
             </div>
 
+            <!-- Members View -->
+            <div x-show="currentView === 'members'">
+                <hgroup>
+                    <h2>Band Members</h2>
+                    <p>Manage your band members and invitations</p>
+                </hgroup>
+
+                <!-- Members List -->
+                <article style="margin-top: 1.5rem; padding: 1.5rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                        <h3 style="margin: 0;">Current Members</h3>
+                        <button @click="openInviteMemberDialog()" class="secondary outline">+ Invite Member</button>
+                    </div>
+
+                    <div class="members-list">
+                        <template x-for="member in currentBandMembers" :key="member.userId">
+                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid var(--pico-form-element-border-color);">
+                                <div style="flex: 1;">
+                                    <strong x-text="member.email || member.name || 'Unknown User'"></strong>
+                                    <p style="color: var(--pico-muted-color); margin: 0.25rem 0 0 0; font-size: 0.9rem;">
+                                        <span x-text="member.role || 'member'"></span>
+                                    </p>
+                                </div>
+                                <button @click="confirmRemoveMember(member)" 
+                                        class="secondary outline"
+                                        style="background: var(--pico-del-color, #c62828); color: white; margin: 0;">
+                                    Remove
+                                </button>
+                            </div>
+                        </template>
+                        <p x-show="currentBandMembers.length === 0" class="text-muted" style="padding: 1rem 0; text-align: center;">No members yet. Invite team members to collaborate.</p>
+                    </div>
+                </article>
+
+                <!-- Invite Member Dialog -->
+                <dialog :open="showInviteMemberDialog">
+                    <article style="display: flex; flex-direction: column; height: 100%;">
+                        <header style="display: flex; align-items: center; gap: 1rem;">
+                            <a href="#" @click.prevent="showInviteMemberDialog = false"
+                                style="font-size: 1.5rem; text-decoration: none;">←</a>
+                            <h3 style="margin: 0;">Invite Member</h3>
+                        </header>
+                        <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                            <label>
+                                Role
+                                <select x-model="inviteMemberRole">
+                                    <option value="viewer">Viewer (read-only)</option>
+                                    <option value="editor">Editor (can modify)</option>
+                                    <option value="owner">Owner (full access)</option>
+                                </select>
+                                <small class="text-muted">Permissions for this band member</small>
+                            </label>
+                            <label style="margin-top: 1rem;">
+                                Note (Optional)
+                                <input type="text" x-model="inviteMemberEmail" 
+                                       placeholder="e.g., John's email or name (for your reference)" />
+                                <small class="text-muted">Not used in the invitation - just to remember who you're inviting</small>
+                            </label>
+                        </div>
+                        <footer style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+                            <button class="secondary outline" @click="showInviteMemberDialog = false" style="margin: 0;">Cancel</button>
+                            <button @click="inviteMember()" style="margin: 0;">Generate Invite Link</button>
+                        </footer>
+                    </article>
+                </dialog>
+
+                <!-- Generated Invite Link Dialog -->
+                <dialog :open="showGeneratedInviteLink">
+                    <article style="display: flex; flex-direction: column; height: 100%;">
+                        <header style="display: flex; align-items: center; gap: 1rem;">
+                            <a href="#" @click.prevent="showGeneratedInviteLink = false"
+                                style="font-size: 1.5rem; text-decoration: none;">←</a>
+                            <h3 style="margin: 0;">Share Invitation Link</h3>
+                        </header>
+                        <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                            <p class="text-muted">Share this link with your band member. They can accept it on any device.</p>
+                            
+                            <!-- Invite Link -->
+                            <label style="margin-top: 1rem;">
+                                Invitation Link
+                                <div style="display: flex; gap: 0.5rem;">
+                                    <input type="text" :value="generatedInviteLink" readonly
+                                           style="flex: 1; font-family: monospace; font-size: 0.85rem; background-color: var(--pico-form-element-background-color);" />
+                                    <button @click="copyInviteLink()" class="secondary" style="margin: 0; white-space: nowrap;">
+                                        📋 Copy
+                                    </button>
+                                </div>
+                            </label>
+
+                            <!-- Pre-filled Message Template -->
+                            <label style="margin-top: 1.5rem;">
+                                Share This Message
+                                <textarea x-model="inviteMessageTemplate" 
+                                         readonly
+                                         style="min-height: 100px; background-color: var(--pico-form-element-background-color);"
+                                         @click="$event.target.select()"></textarea>
+                                <small class="text-muted">Copy and share via email, text, Slack, or your preferred method</small>
+                            </label>
+
+                            <!-- Quick Copy Button for Message -->
+                            <button @click="copyInviteMessage()" class="secondary outline" style="width: 100%; margin-top: 1rem; margin-bottom: 0;">
+                                📋 Copy Message
+                            </button>
+                        </div>
+                        <footer style="display: flex; justify-content: flex-end;">
+                            <button @click="showGeneratedInviteLink = false; showInviteMemberDialog = false; resetInviteForm();" style="margin: 0;">Done</button>
+                        </footer>
+                    </article>
+                </dialog>
+            </div>
+
             <!-- Settings View (Admin/Setup) -->
             <div x-show="currentView === 'settings'" x-data="{ settingsTab: 'myband' }">
                 <hgroup>
@@ -691,49 +804,6 @@
                             <button @click="cancelBandEdit()" class="secondary outline">Cancel</button>
                         </div>
                     </article>
-
-                    <!-- Members Section -->
-                    <article style="margin-top: 1.5rem; padding: 1.5rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                            <h4 style="margin: 0;">Members</h4>
-                            <button @click="showInviteMemberDialog = true" class="secondary outline">+ Invite</button>
-                        </div>
-
-                        <div class="members-list">
-                            <template x-for="member in currentBandMembers" :key="member.userId">
-                                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; border-bottom: 1px solid var(--pico-form-element-border-color);">
-                                    <div>
-                                        <strong x-text="member.email"></strong>
-                                        <p style="color: var(--pico-muted-color); margin: 0.25rem 0 0 0; font-size: 0.9rem;" x-text="member.role"></p>
-                                    </div>
-                                </div>
-                            </template>
-                            <p x-show="currentBandMembers.length === 0" class="text-muted" style="padding: 0.75rem 0;">No members yet. Invite team members to collaborate.</p>
-                        </div>
-                    </article>
-
-                    <!-- Invite Member Dialog -->
-                    <dialog x-show="showInviteMemberDialog">
-                        <article>
-                            <header>
-                                <button aria-label="Close" rel="prev" @click="showInviteMemberDialog = false" style="float: right;"></button>
-                                <h3>Invite Member</h3>
-                            </header>
-                            <input type="email" x-model="inviteMemberEmail" 
-                                   placeholder="Email address" />
-                            <label>
-                                Role
-                                <select x-model="inviteMemberRole">
-                                    <option value="member">Member</option>
-                                    <option value="admin">Admin</option>
-                                </select>
-                            </label>
-                            <footer>
-                                <button class="secondary" @click="showInviteMemberDialog = false">Cancel</button>
-                                <button @click="inviteBandMember()">Send Invite</button>
-                            </footer>
-                        </article>
-                    </dialog>
                 </section>
 
                 <!-- Options Section -->
