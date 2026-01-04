@@ -141,7 +141,11 @@
             }
 
             if (window.Clerk) {
-                await Clerk.load();
+                await Clerk.load({
+                    afterSignInUrl: window.location.origin + '/roady',
+                    afterSignUpUrl: window.location.origin + '/roady',
+                    afterSignOutUrl: window.location.origin + '/roady'
+                });
             } else {
                 console.error('❌ Clerk failed to load');
                 return;
