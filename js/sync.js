@@ -89,9 +89,10 @@ window.Sync = {
             const remoteDB = new PouchDB(remoteDbUrl, remoteOptions);
 
             // Test connection first (with timeout to fail fast if offline)
+            let timeoutId;
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 2000);
+                timeoutId = setTimeout(() => controller.abort(), 2000);
                 
                 await remoteDB.info();
                 clearTimeout(timeoutId);
@@ -99,7 +100,7 @@ window.Sync = {
             } catch (connectionError) {
                 // Connection test failed - likely offline or server unreachable
                 // This is expected behavior - don't try to sync
-                clearTimeout(timeoutId);
+                if (timeoutId) clearTimeout(timeoutId);
                 console.warn('⚠️ MyCouch not reachable (offline or server down), sync unavailable');
                 throw connectionError;  // Still throw so calling code knows sync failed
             }
