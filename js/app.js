@@ -472,7 +472,7 @@
                 // Set defaults if missing
                 if (!this.options.mycouchBaseUrl) {
                     console.log('🔧 Setting default MyCouch URL');
-                    this.options.mycouchBaseUrl = 'http://argw.com:5985';
+                    this.options.mycouchBaseUrl = 'https://db.argw.com';
                 }
                 
                 console.log('📦 Final options:', {
@@ -1722,16 +1722,18 @@
                 const token = await Clerk.session?.getToken();
                 const virtualTenantId = this.getVirtualTenantId(this.currentBandTenantId);
                 
+                const body = { role: this.inviteMemberRole };
+                if (this.inviteMemberEmail.trim()) {
+                    body.email = this.inviteMemberEmail.trim();
+                }
+                
                 const response = await fetch(`${this.options.mycouchBaseUrl}/api/tenants/${virtualTenantId}/invitations`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${token}`
                     },
-                    body: JSON.stringify({ 
-                        email: this.inviteMemberEmail, 
-                        role: this.inviteMemberRole 
-                    })
+                    body: JSON.stringify(body)
                 });
 
                 if (!response.ok) {

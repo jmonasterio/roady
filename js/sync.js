@@ -98,8 +98,9 @@ window.Sync = {
                 console.log('✓ Remote DB connected');
             } catch (connectionError) {
                 // Connection test failed - likely offline or server unreachable
-                // Don't spam console with error - this is expected when offline
-                console.warn('⚠️ MyCouch not reachable yet (offline or server down)');
+                // This is expected behavior - don't try to sync
+                clearTimeout(timeoutId);
+                console.warn('⚠️ MyCouch not reachable (offline or server down), sync unavailable');
                 throw connectionError;  // Still throw so calling code knows sync failed
             }
 
@@ -157,17 +158,19 @@ window.Sync = {
             // Network errors expected when offline - don't log as error
             const isNetworkError = err.message?.includes('Failed to fetch') || 
                                    err.name === 'AbortError' ||
-                                   err.message?.includes('ERR_CONNECTION_REFUSED');
+                                   err.message?.includes('ERR_CONNECTION_REFUSED') ||
+                                   err.message?.includes('Unexpected token') ||  // HTML response instead of JSON
+                                   err.message?.includes('SyntaxError');
             
-            if (isNetworkError) {
-                console.debug('ℹ️ MyCouch sync not available (offline):', err.message);
+            if (isNetworkError || err.status === 502 || err.status === 503) {
+                console.debug('ℹ️ MyCouch sync not available (offline or server error):', err.message);
             } else {
                 console.error('Failed to setup MyCouch sync:', err);
             }
             
             this.syncStatus = 'error';
             // Don't dispatch error event for expected network failures
-            if (!isNetworkError) {
+            if (!isNetworkError && err.status !== 502 && err.status !== 503) {
                 window.dispatchEvent(new CustomEvent('db-sync-error', {
                     detail: { error: { message: 'Connection failed. Check MyCouch proxy is running and reachable.' } }
                 }));
