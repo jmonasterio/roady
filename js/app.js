@@ -87,7 +87,7 @@
             addedEquipmentName: ''
         },
         options: {
-            mycouchBaseUrl: 'http://argw.com:5985',
+            mycouchBaseUrl: 'https://db.argw.com',
             tenantId: ''
         },
         currentDbName: '',
@@ -156,7 +156,9 @@
                 const mainContent = document.querySelector('main.container');
                 if (mainContent) {
                     mainContent.innerHTML = '<div id="sign-in-container" style="display: flex; justify-content: center; margin-top: 2rem;"></div>';
-                    Clerk.mountSignIn(document.getElementById('sign-in-container'));
+                    Clerk.mountSignIn(document.getElementById('sign-in-container'), {
+                        redirectUrl: window.location.origin + '/roady'
+                    });
                 }
                 return;
             }
