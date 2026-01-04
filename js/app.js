@@ -178,7 +178,7 @@
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${authToken}`
                     },
-                    body: JSON.stringify({ token })
+                    body: JSON.stringify({ inviteToken: token })
                 });
 
                 if (response.ok) {
@@ -1547,12 +1547,12 @@
                 
                 const bandName = this.newBandName;
                 
-                // CRITICAL: Create tenant via /__tenants endpoint (PouchDB)
-                // This ensures the tenant is properly registered in couch-sitter with applicationId
-                // so it can be deleted cleanly via DELETE /__tenants
+                // CRITICAL: Create tenant via /api/tenants BACKEND endpoint (NOT virtual table)
+                // Virtual table would create orphaned tenant without applicationId
+                // Backend API ensures proper registration in couch-sitter for cascade deletion
                 try {
-                    console.log('📤 Creating tenant via /__tenants endpoint:', bandName);
-                    const response = await fetch(`${this.options.mycouchBaseUrl}/__tenants`, {
+                    console.log('📤 Creating band via /api/tenants backend endpoint:', bandName);
+                    const response = await fetch(`${this.options.mycouchBaseUrl}/api/tenants`, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
@@ -1563,12 +1563,12 @@
 
                     if (!response.ok) {
                         const error = await response.json();
-                        throw new Error(error.detail || 'Failed to create tenant');
+                        throw new Error(error.detail || 'Failed to create band');
                     }
 
                     const tenantResponse = await response.json();
                     const newBandId = tenantResponse._id; // Use the tenant ID from server
-                    console.log('✅ Tenant created via backend:', tenantResponse);
+                    console.log('✅ Band created via /api/tenants with applicationId:', tenantResponse);
                     
                     this.showCreateBandDialog = false;
                     this.newBandName = '';

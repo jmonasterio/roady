@@ -335,6 +335,76 @@ Next poll uses: new seq
 - If filter doesn't exist, sync may silently fail or retry
 - **TODO**: Create `_design/filters` doc in couch-sitter with user_filter, tenant_filter, etc.
 
+## API Architecture: Virtual Tables vs Backend APIs
+
+**Critical Rule**: API type is determined by **consistency requirement**, not data type.
+
+### Virtual Tables (`/__users/*`, `/__tenants/*`) - Offline-First
+**Use when:** Operation can work offline (changes sync later, eventual consistency acceptable)
+
+**Operations:**
+- List bands: `GET /__tenants`
+- Load bands from cache: `getMyTenants()` (reads local PouchDB)
+- Switch band: `PUT /__users/{id}` (update active_tenant_id, async sync)
+- Delete band: Soft-delete with `deletedAt` field (PouchDB syncs)
+
+**Pattern:** User action → Write local PouchDB → Sync background → Consistent
+
+### Backend APIs (`/api/...`) - Online-Only
+**Use when:** Operation requires **immediate server response** (access control, tokens, time-sensitive)
+
+**Operations:**
+- Create band: `POST /api/tenants` ⚠️ **CRITICAL: Must register in couch-sitter with applicationId**
+- Create invitation: `POST /api/tenants/{id}/invitations`
+- Accept invitation: `PATCH /api/invitations/accept`
+- Remove member: `DELETE /api/tenants/{id}/members/{user_id}`
+
+**Pattern:** User action → Validate server → Grant permission → Immediate result
+
+### Decision Tree
+
+```
+Does this operation need IMMEDIATE server response?
+├─ NO (can wait for sync) → Use VIRTUAL TABLE
+│   Examples: Create/delete band, switch band, load bands
+│   
+└─ YES (need answer now) → Use BACKEND API
+    ├─ Affects permissions? → BACKEND API (🔴 critical)
+    │   Examples: Invite, remove member, accept invitation
+    ├─ Time-sensitive? → BACKEND API (🔴 tokens expire)
+    │   Examples: Create/accept invitation
+    └─ Needs atomic transaction? → BACKEND API (🔴 no sync lag)
+        Examples: Token validation, membership check
+```
+
+### Key Insight: Band Creation
+
+**Band creation is a BACKEND API operation, NOT virtual table:**
+- ✅ Creates tenant in `couch-sitter` database (not roady)
+- ✅ Sets `applicationId: "roady"` for cascade deletion
+- ✅ Ensures proper ownership and user registration
+- ✅ Enables clean deletion via `DELETE /__tenants`
+
+**Wrong:** `POST /__tenants` (creates orphaned tenant, cannot delete)
+**Correct:** `POST /api/tenants` (registers in couch-sitter with metadata)
+
+See `BAND_CREATION_FIX.md` for details.
+
+### Offline Implications
+
+**Operations that work offline:**
+- ✅ Create/delete/switch bands (local first, sync background)
+- ✅ Manage equipment & gigs (local PouchDB)
+- ✅ Load cached data
+
+**Operations that require internet:**
+- ❌ Create band (needs backend registration)
+- ❌ Create invitation (needs secure token generation)
+- ❌ Accept invitation (needs token validation)
+- ❌ Remove member (needs access control check)
+
+This is acceptable - member management is online-only per design.
+
 ## Git Workflow
 
 **Do NOT automatically commit changes.** Always leave git commits for the user to review and perform manually. Changes made during work should be staged and ready but not committed unless explicitly requested.
