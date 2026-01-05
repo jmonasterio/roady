@@ -3,10 +3,50 @@ const DB = {
     db: null,
     optionsDb: null,
     currentTenant: null, // Will be set by TenantManager
+    currentRemoteUrl: null, // Will be set before init
+    currentUsername: null, // Will be set before init
+
+    // Hash a URL to create a short identifier
+    hashRemoteUrl(url) {
+        // Canonicalize URL: lowercase, remove trailing slash, remove query/fragment
+        let canonicalized = url
+            .toLowerCase()
+            .replace(/\/$/, '') // Remove trailing slash
+            .split('?')[0]      // Remove query string
+            .split('#')[0];     // Remove fragment
+        
+        // Simple hash function - create a short identifier from URL
+        let hash = 0;
+        for (let i = 0; i < canonicalized.length; i++) {
+            const char = canonicalized.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32-bit integer
+        }
+        // Return positive hex string (last 8 chars)
+        return Math.abs(hash).toString(16).slice(-8);
+    },
+
+    // Set remote identity (must be called before init())
+    setRemoteIdentity(remoteUrl, username) {
+        this.currentRemoteUrl = remoteUrl;
+        this.currentUsername = username;
+        console.log(`📍 DB: Remote identity set - URL: ${remoteUrl}, User: ${username}`);
+    },
 
     init() {
-        // Determine database name based on environment
-        const dbName = window.location.hostname === 'localhost' ? 'roady-staging' : 'roady';
+        // Determine database name based on remote URL and username
+        let dbName;
+        
+        if (this.currentRemoteUrl && this.currentUsername) {
+            // Pattern: pouchdb-local-{remoteUrlHash}-{username}
+            const urlHash = this.hashRemoteUrl(this.currentRemoteUrl);
+            dbName = `pouchdb-local-${urlHash}-${this.currentUsername}`;
+            console.log(`📦 DB: Using scoped database - ${dbName}`);
+        } else {
+            // Fallback for development/testing
+            dbName = window.location.hostname === 'localhost' ? 'roady-staging' : 'roady';
+            console.log(`📦 DB: Using fallback database - ${dbName}`);
+        }
         
         // Initialize local PouchDB without auth (auth handled at higher level)
         this.db = new PouchDB(dbName);

@@ -285,8 +285,15 @@
             // 3. Load Options first (before tenant init, so we have mycouchBaseUrl)
             await this.loadOptions();
             
-            // Set current database name based on environment
-            this.currentDbName = window.location.hostname === 'localhost' ? 'roady-staging' : 'roady';
+            // Set remote identity for scoped PouchDB naming
+            const username = Clerk.user.username || Clerk.user.primaryEmailAddress?.emailAddress?.split('@')[0] || 'user';
+            DB.setRemoteIdentity(this.options.mycouchBaseUrl, username);
+            
+            // Initialize DB with scoped naming
+            DB.init();
+            
+            // Set current database name for display
+            this.currentDbName = `pouchdb-local-${DB.hashRemoteUrl(this.options.mycouchBaseUrl)}-${username}`;
 
             // Load JWT token for display in settings
             await this.loadJwtToken();
@@ -500,13 +507,70 @@
             if (window.tenantManager && this.options.mycouchBaseUrl) {
                 const oldUrl = window.tenantManager.mycouchBaseUrl;
                 if (oldUrl !== this.options.mycouchBaseUrl) {
-                    console.log('🔗 MyCouch URL changed, updating TenantManager:', this.options.mycouchBaseUrl);
-                    window.tenantManager.mycouchBaseUrl = this.options.mycouchBaseUrl;
+                    console.log('🔗 MyCouch URL changed, switching to scoped database...');
                     
-                    // Restart retry loop with new URL
-                    if (this.retryInterval) {
-                        clearInterval(this.retryInterval);
-                        this.startBackgroundRetry();
+                    // Check if database needs to switch (URL + username combination changed)
+                    const username = Clerk.user.username || Clerk.user.primaryEmailAddress?.emailAddress?.split('@')[0] || 'user';
+                    const newUrlHash = DB.hashRemoteUrl(this.options.mycouchBaseUrl);
+                    const oldUrlHash = DB.hashRemoteUrl(oldUrl);
+                    
+                    if (newUrlHash !== oldUrlHash) {
+                        console.log(`💾 Database scope changed: ${oldUrlHash} → ${newUrlHash}`);
+                        console.log(`⏸️  Pausing replication...`);
+                        
+                        // Pause current replication
+                        if (window.Sync && window.Sync.disableSync) {
+                            window.Sync.disableSync();
+                        }
+                        
+                        // Switch to new database (scoped by new URL + username)
+                        const oldDbName = DB.db?.name || 'unknown';
+                        DB.setRemoteIdentity(this.options.mycouchBaseUrl, username);
+                        DB.init(); // This will create/switch to the new scoped database
+                        const newDbName = DB.db?.name || 'unknown';
+                        
+                        console.log(`📦 Switched database: ${oldDbName} → ${newDbName}`);
+                        
+                        // Update display name
+                        this.currentDbName = newDbName;
+                        
+                        // Update TenantManager with new URL
+                        window.tenantManager.mycouchBaseUrl = this.options.mycouchBaseUrl;
+                        
+                        // Clear cached bands (will reload from new database)
+                        this.userBands = [];
+                        this.currentBandTenantId = null;
+                        
+                        // Restart with new database and TenantManager
+                        this.isLoading = true;
+                        try {
+                            const tenant = await window.tenantManager.initializeTenantContext();
+                            this.options.tenantId = tenant.tenantId;
+                            DB.setTenant(tenant.tenantId);
+                            console.log('✅ Switched to new database and tenant context:', tenant.name);
+                            await this.loadBands();
+                            await this.loadData();
+                        } catch (e) {
+                            console.error('Error initializing with new database:', e);
+                            this.showSnackbar('Error switching to new CouchDB server', 'error');
+                        } finally {
+                            this.isLoading = false;
+                        }
+                        
+                        // Re-enable sync with new URL
+                        this.enableSync();
+                        
+                        return; // Exit early - we've done a full reload
+                    } else {
+                        // Same database scope, just update TenantManager
+                        console.log('🔗 Same database scope, updating TenantManager:', this.options.mycouchBaseUrl);
+                        window.tenantManager.mycouchBaseUrl = this.options.mycouchBaseUrl;
+                        
+                        // Restart retry loop with new URL
+                        if (this.retryInterval) {
+                            clearInterval(this.retryInterval);
+                            this.startBackgroundRetry();
+                        }
                     }
                 }
             }
@@ -1664,11 +1728,25 @@
         async loadBandMembers() {
             // Members are already loaded in /__tenants response
             // Get members from current band info if available
-            const bandInfo = this.userBands.find(b => b._id === this.currentBandTenantId);
-            if (bandInfo && bandInfo.members) {
+            console.log('🔍 loadBandMembers: currentBandTenantId =', this.currentBandTenantId);
+            console.log('🔍 userBands available:', this.userBands.map(b => ({ _id: b._id, tenantId: b.tenantId, name: b.name })));
+            
+            // Strip "tenant_" prefix from currentBandTenantId for comparison
+            const virtualTenantId = this.currentBandTenantId.replace('tenant_', '');
+            console.log('🔍 Virtual tenant ID:', virtualTenantId);
+            
+            // Find by either _id or tenantId
+            const bandInfo = this.userBands.find(b => 
+                b._id === virtualTenantId || b.tenantId === virtualTenantId || b._id === this.currentBandTenantId
+            );
+            console.log('🔍 Found bandInfo:', bandInfo);
+            console.log('🔍 bandInfo.members:', bandInfo?.members);
+            
+            if (bandInfo && bandInfo.members && Array.isArray(bandInfo.members)) {
                 this.currentBandMembers = bandInfo.members;
                 console.log('✅ Band members loaded from /__tenants:', this.currentBandMembers);
             } else {
+                console.warn('⚠️ No bandInfo found or no members array. bandInfo:', bandInfo);
                 this.currentBandMembers = [];
             }
         },
@@ -1746,7 +1824,7 @@
 
                 // Generate shareable link with token
                 const inviteToken = invitationData.token || invitationData.id;
-                const baseUrl = window.location.origin + '/roady';
+                const baseUrl = window.location.origin;
                 this.generatedInviteLink = `${baseUrl}?invite_token=${inviteToken}`;
                 this.generatedInviteToken = inviteToken;
                 

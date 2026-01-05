@@ -822,11 +822,11 @@
                          </label>
 
                          <label style="margin-top: 1rem; display: block; color: #666; font-size: 0.9rem;">
-                              <strong>Database Name (Read-Only)</strong>
+                              <strong>Local Database Name (Read-Only)</strong>
                               <input type="text" x-model="currentDbName" readonly
-                                  style="background-color: #f5f5f5; cursor: not-allowed; color: #666;" />
+                                  style="background-color: #f5f5f5; cursor: not-allowed; color: #666; font-family: monospace; font-size: 0.85rem;" />
                               <small style="display: block; margin-top: 0.25rem; color: #999;">
-                                  Uses <strong>roady-staging</strong> on localhost, <strong>roady</strong> in production
+                                  Scoped to server URL and username. Switching CouchDB creates a new local database to avoid data leakage.
                               </small>
                           </label>
                          </div>
