@@ -24,12 +24,12 @@ class TenantManager {
     }
 
     /**
-     * Get MyCouch URL from app settings (IndexDB) or fallback
+     * Get MyCouch URL from app settings (IndexDB) or use stored value
      * App loads settings from IndexDB and stores in Alpine state
      */
     getMycouchUrl() {
         try {
-            // Try to get from Alpine app instance
+            // Try to get from Alpine app instance (if it's been set up)
             if (window.Alpine && window.Alpine.store) {
                 const store = window.Alpine.store('roady');
                 if (store && store.options && store.options.mycouchBaseUrl) {
@@ -38,13 +38,18 @@ class TenantManager {
                 }
             }
         } catch (error) {
-            console.warn('⚠️ Could not read MyCouch URL from app settings:', error);
+            // Alpine store might not be ready yet
         }
         
-        // Fallback: localhost for dev, would need to configure in UI for prod
-        const fallback = 'http://localhost:5985';
-        console.log('📍 Using fallback MyCouch URL:', fallback);
-        return fallback;
+        // Return the stored URL from constructor (TenantManager was initialized with it)
+        if (this.mycouchBaseUrl) {
+            console.log('📍 Using stored MyCouch URL:', this.mycouchBaseUrl);
+            return this.mycouchBaseUrl;
+        }
+        
+        // No URL available - this is a configuration error
+        console.error('❌ MyCouch URL not configured. TenantManager must be initialized with a URL.');
+        throw new Error('MyCouch URL not available. Check your app configuration.');
     }
 
     /**
@@ -233,7 +238,8 @@ class TenantManager {
             const jwt = await this.getClerkToken();
             if (!jwt) return;
 
-            const url = `${this.mycouchBaseUrl}/__users/_changes?since=${this.lastUserChangeSeq}&include_docs=true`;
+            const baseUrl = this.mycouchBaseUrl.endsWith('/') ? this.mycouchBaseUrl.slice(0, -1) : this.mycouchBaseUrl;
+            const url = `${baseUrl}/__users/_changes?since=${this.lastUserChangeSeq}&include_docs=true`;
             const response = await fetch(url, {
                 headers: {
                     'Authorization': `Bearer ${jwt}`,
@@ -456,8 +462,7 @@ class TenantManager {
                         type: 'tenant',
                         tenantId: personalTenantId,
                         name: `${userName}'s Band`,
-                        userIds: [this.currentUserHash],
-                        isPersonal: true,
+                        userIds: [`user_${this.currentUserHash}`],
                         createdAt: new Date().toISOString(),
                         syncedAt: null
                     };
@@ -663,6 +668,8 @@ class TenantManager {
         } catch (error) {
             if (error.name === 'AbortError') {
                 console.warn('⚠️ Tenant loading timeout: network may be slow or MyCouch unavailable');
+            } else if (error instanceof TypeError) {
+                console.error('❌ Network error fetching tenants (no connection or CORS issue):', error.message);
             } else {
                 console.error('❌ Error fetching tenants from server:', error);
             }
@@ -721,7 +728,10 @@ class TenantManager {
 
             console.log(`🔄 Syncing active tenant to MyCouch for user ${hashedUserId}`);
             
-            const response = await fetch(`${this.mycouchBaseUrl}/__users/${hashedUserId}`, {
+            // Send internal user ID format (user_<hash>)
+            const internalUserId = `user_${hashedUserId}`;
+            const baseUrl = this.mycouchBaseUrl.endsWith('/') ? this.mycouchBaseUrl.slice(0, -1) : this.mycouchBaseUrl;
+            const response = await fetch(`${baseUrl}/__users/${internalUserId}`, {
                 method: 'PUT',
                 headers: {
                     'Authorization': `Bearer ${jwt}`,
@@ -742,7 +752,11 @@ class TenantManager {
             // Session document is the source of truth for per-device tenant tracking
             return { success: true, activeTenantId: virtualTenantId };
         } catch (error) {
-            console.error('❌ Failed to sync active tenant to MyCouch:', error.message);
+            if (error instanceof TypeError) {
+                console.error('❌ Network error syncing to MyCouch (no connection or CORS issue):', error.message);
+            } else {
+                console.error('❌ Failed to sync active tenant to MyCouch:', error.message);
+            }
             throw error;
         }
     }
@@ -881,6 +895,87 @@ class TenantManager {
      */
     extractVirtualTenantId(tenantId) {
         return tenantId.startsWith('tenant_') ? tenantId.substring(7) : tenantId;
+    }
+
+    /**
+     * Validate tenant format in user.tenants array
+     * 
+     * CRITICAL: Detects when full tenant documents are incorrectly assigned to user.tenants
+     * See INVITATION_ACCEPTANCE_CODE_REVIEW.md for details on data corruption bug.
+     * 
+     * Correct format for user.tenants entry:
+     * {
+     *   tenantId: "<uuid>",    // Virtual format without "tenant_" prefix
+     *   role: "member",        // Role for this user in this tenant
+     *   personal: false,       // Whether this is user's personal tenant
+     *   joinedAt: "2025-01-12T...",  // When user joined
+     *   userIds: [...]         // Copy of tenant's member list
+     * }
+     * 
+     * WRONG format (full tenant document):
+     * {
+     *   _id: "tenant_<uuid>",  // ← Wrong! Should not have _id
+     *   type: "tenant",        // ← Wrong! Should not have type
+     *   name: "Band Name",     // ← Wrong! Should not have name at top level
+     *   userIds: [...],
+     *   createdAt: "...",
+     *   members: [...]         // ← Wrong! Should not have members array
+     * }
+     */
+    validateUserTenantsFormat(userDoc) {
+        if (!userDoc || !userDoc.tenants) {
+            return { valid: true, errors: [] };
+        }
+
+        const errors = [];
+        for (let i = 0; i < userDoc.tenants.length; i++) {
+            const entry = userDoc.tenants[i];
+            
+            // Check for signs of full tenant document corruption
+            if (entry._id) {
+                errors.push(`Entry ${i}: Has _id field (indicates full tenant document corruption)`);
+            }
+            if (entry.type === 'tenant') {
+                errors.push(`Entry ${i}: Has type='tenant' field (indicates full tenant document corruption)`);
+            }
+            if (entry.members && Array.isArray(entry.members)) {
+                errors.push(`Entry ${i}: Has members array (indicates full tenant document corruption)`);
+            }
+            if (entry.createdAt && !entry.joinedAt) {
+                errors.push(`Entry ${i}: Has createdAt but no joinedAt (indicates full tenant document corruption)`);
+            }
+            
+            // Check for missing required fields
+            if (!entry.tenantId) {
+                errors.push(`Entry ${i}: Missing tenantId field`);
+            }
+            if (!entry.role) {
+                errors.push(`Entry ${i}: Missing role field`);
+            }
+            if (entry.personal === undefined) {
+                errors.push(`Entry ${i}: Missing personal field`);
+            }
+        }
+
+        return {
+            valid: errors.length === 0,
+            errors: errors
+        };
+    }
+
+    /**
+     * Log validation errors with context
+     * Used to detect data corruption early
+     */
+    logValidationErrors(validation) {
+        if (!validation.valid) {
+            console.error('❌ CRITICAL: user.tenants format validation FAILED');
+            console.error('This indicates data corruption from assigning full tenant documents');
+            console.error('to user.tenants array. See INVITATION_ACCEPTANCE_CODE_REVIEW.md');
+            validation.errors.forEach(error => console.error(`  - ${error}`));
+            return false;
+        }
+        return true;
     }
 }
 

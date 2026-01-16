@@ -509,8 +509,8 @@
                                  :style="band._id === currentBandTenantId ? 'border: 2px solid var(--pico-primary, #5a67d8);' : 'border: 1px solid var(--pico-form-element-border-color);'">
                             <div style="display: flex; justify-content: space-between; align-items: start; gap: 1rem; margin-bottom: 1rem;">
                                 <div style="flex: 1; cursor: pointer;" @click="switchBand(band._id)">
-                                    <h4 x-text="band.bandName" style="margin: 0;"></h4>
-                                    <p style="color: var(--pico-muted-color); margin: 0.5rem 0 0 0; font-size: 0.75rem; font-family: monospace;" x-text="band._id"></p>
+                                     <h4 x-text="band.name" style="margin: 0;"></h4>
+                                     <p style="color: var(--pico-muted-color); margin: 0.5rem 0 0 0; font-size: 0.75rem; font-family: monospace;" x-text="band._id.startsWith('tenant_') ? band._id.substring(7) : band._id"></p>
                                     <p style="color: var(--pico-muted-color); margin: 0.5rem 0 0 0; font-size: 0.9rem;" x-text="band.role"></p>
                                     <p x-show="band.memberCount" style="color: var(--pico-muted-color); margin: 0.25rem 0 0 0; font-size: 0.85rem;" x-text="band.memberCount + ' member' + (band.memberCount !== 1 ? 's' : '')"></p>
                                 </div>
@@ -804,6 +804,33 @@
                             <button @click="cancelBandEdit()" class="secondary outline">Cancel</button>
                         </div>
                     </article>
+
+                    <!-- Leave Band Section -->
+                    <article style="margin-top: 1.5rem; padding: 1.5rem; border-top: 1px solid var(--pico-form-element-border-color);">
+                        <h4>Leave Band</h4>
+                        <p class="text-muted">Remove yourself from this band. You will lose access to all equipment and gigs.</p>
+
+                        <template x-if="getCurrentUserRole() === 'owner'">
+                            <div>
+                                <p style="color: var(--pico-muted-color); font-size: 0.9rem; margin-bottom: 1rem;">
+                                    ⚠️ As the owner, you must transfer ownership to another member before leaving, or delete the band instead.
+                                </p>
+                                <button @click="openDeleteBandConfirmation()"
+                                        class="secondary outline"
+                                        style="background: var(--pico-del-color, #c62828); color: white;">
+                                    Delete Band
+                                </button>
+                            </div>
+                        </template>
+
+                        <template x-if="getCurrentUserRole() !== 'owner'">
+                            <button @click="confirmLeaveBand()"
+                                    class="secondary outline"
+                                    style="background: var(--pico-del-color, #c62828); color: white;">
+                                Leave Band
+                            </button>
+                        </template>
+                    </article>
                 </section>
 
                 <!-- Options Section -->
@@ -978,29 +1005,29 @@
             </div>
 
             <!-- Confirmation Modal -->
-            <dialog :open="confirmationDialog.isOpen">
+            <dialog :open="$data.confirmationDialog.isOpen">
                 <article style="display: flex; flex-direction: column; gap: 1rem;">
                     <header style="margin: 0;">
-                        <h3 style="margin: 0;" x-text="confirmationDialog.title"></h3>
+                        <h3 style="margin: 0;" x-text="$data.confirmationDialog.title"></h3>
                     </header>
-                    <p x-text="confirmationDialog.message" style="margin: 0;"></p>
+                    <p x-text="$data.confirmationDialog.message" style="margin: 0;"></p>
                     <footer style="display: flex; justify-content: flex-end; gap: 0.5rem; margin: 0;">
                         <button @click="confirmDialogAction(false)" class="secondary outline" style="margin: 0;">
-                            <span x-text="confirmationDialog.cancelText"></span>
+                            <span x-text="$data.confirmationDialog.cancelText"></span>
                         </button>
                         <button @click="confirmDialogAction(true)"
-                            :style="confirmationDialog.isDangerous ? 'background: var(--pico-del-color, #c62828); color: white; margin: 0;' : 'margin: 0;'">
-                            <span x-text="confirmationDialog.confirmText"></span>
+                            :style="$data.confirmationDialog.isDangerous ? 'background: var(--pico-del-color, #c62828); color: white; margin: 0;' : 'margin: 0;'">
+                            <span x-text="$data.confirmationDialog.confirmText"></span>
                         </button>
                     </footer>
                 </article>
             </dialog>
 
             <!-- Snackbar (Undo Notification) -->
-            <div x-show="snackbar.isOpen"
+            <div x-show="$data.snackbar.isOpen"
                 style="position: fixed; bottom: 1rem; left: 1rem; right: 1rem; max-width: 400px; background: var(--pico-form-element-background-color); border: 1px solid var(--pico-form-element-border-color); border-radius: var(--pico-border-radius); padding: 1rem; display: flex; align-items: center; gap: 1rem; z-index: 1000; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-                <span x-text="snackbar.message" style="flex: 1; font-size: 0.9rem;"></span>
-                <button x-show="snackbar.action" @click="snackbarUndo()" class="secondary outline"
+                <span x-text="$data.snackbar.message" style="flex: 1; font-size: 0.9rem;"></span>
+                <button x-show="$data.snackbar.action" @click="snackbarUndo()" class="secondary outline"
                     style="margin: 0; white-space: nowrap; padding: 0.375rem 0.75rem; font-size: 0.85rem;">
                     Undo
                 </button>
@@ -1018,21 +1045,21 @@
                         <button class="close" @click="showDiagnostics = false"></button>
                     </header>
                     
-                    <div x-show="!diagnosticsResults.error && !diagnosticsResults.jwtClaim" style="text-align: center;">
+                    <div x-show="$data.diagnosticsResults && !$data.diagnosticsResults.error && !$data.diagnosticsResults.jwtClaim" style="text-align: center;">
                         <p>Loading...</p>
                     </div>
 
-                    <div x-show="diagnosticsResults.error">
+                    <div x-show="$data.diagnosticsResults && $data.diagnosticsResults.error">
                         <h3 style="color: var(--pico-form-element-invalid-border-color);">❌ Error</h3>
-                        <p x-text="diagnosticsResults.error"></p>
+                        <p x-text="$data.diagnosticsResults.error"></p>
                     </div>
 
-                    <div x-show="diagnosticsResults.jwtClaim">
+                    <div x-show="$data.diagnosticsResults && $data.diagnosticsResults.jwtClaim">
                         <h3>📋 JWT Claims</h3>
-                        <pre style="background: var(--pico-card-background-color); padding: 1rem; border-radius: var(--pico-border-radius); overflow-x: auto; font-size: 0.85em;"><code x-text="JSON.stringify(diagnosticsResults.jwtClaim, null, 2)"></code></pre>
+                        <pre style="background: var(--pico-card-background-color); padding: 1rem; border-radius: var(--pico-border-radius); overflow-x: auto; font-size: 0.85em;"><code x-text="$data.diagnosticsResults && $data.diagnosticsResults.jwtClaim ? JSON.stringify($data.diagnosticsResults.jwtClaim, null, 2) : ''"></code></pre>
                         
                         <h3>✅ MyCouch Response</h3>
-                        <pre x-show="diagnosticsResults.mycouchResponse" style="background: var(--pico-card-background-color); padding: 1rem; border-radius: var(--pico-border-radius); overflow-x: auto; font-size: 0.85em;"><code x-text="JSON.stringify(diagnosticsResults.mycouchResponse, null, 2)"></code></pre>
+                        <pre x-show="$data.diagnosticsResults && $data.diagnosticsResults.mycouchResponse" style="background: var(--pico-card-background-color); padding: 1rem; border-radius: var(--pico-border-radius); overflow-x: auto; font-size: 0.85em;"><code x-text="$data.diagnosticsResults && $data.diagnosticsResults.mycouchResponse ? JSON.stringify($data.diagnosticsResults.mycouchResponse, null, 2) : ''"></code></pre>
                     </div>
 
                     <footer style="text-align: right;">

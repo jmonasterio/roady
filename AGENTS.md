@@ -361,6 +361,26 @@ Next poll uses: new seq
 
 **Pattern:** User action → Validate server → Grant permission → Immediate result
 
+### Tenant ID Format: No Silent Conversions
+
+**CRITICAL RULE: The caller is responsible for sending the correct format. Backend MUST reject invalid formats.**
+
+- **Internal format**: `tenant_{uuid}` (stored in CouchDB `_id` field)
+- **Virtual format**: UUID only, no prefix (used in API responses to frontend)
+
+**Frontend responsibility when calling `/api/...` endpoints:**
+- ✅ Must prepend `tenant_` prefix before sending to backend
+- ❌ Do NOT send virtual format to `/api/` endpoints
+- Example: If `currentBandTenantId = "15a46b2e..."`, send `tenant_15a46b2e...` to API
+
+**Backend responsibility in MyCouch:**
+- ✅ MUST validate format with `validate_tenant_id_format(tenant_id)`
+- ✅ MUST reject with 400 if format is wrong
+- ❌ Do NOT silently convert or strip prefixes
+- ❌ Do NOT guess the caller's intent
+
+**Why:** Fail-fast error detection. Silent conversions hide bugs and make debugging harder. Explicit validation ensures both sides agree on the format.
+
 ### Decision Tree
 
 ```

@@ -172,7 +172,9 @@
                     return false;
                 }
 
-                const response = await fetch(`${this.options.mycouchBaseUrl}/api/invitations/accept`, {
+                // Normalize URL: remove trailing slash to avoid double slashes
+                const baseUrl = this.options.mycouchBaseUrl.replace(/\/$/, '');
+                const response = await fetch(`${baseUrl}/api/invitations/accept`, {
                     method: 'PATCH',
                     headers: {
                         'Content-Type': 'application/json',
@@ -188,10 +190,36 @@
                     // Clear the token from sessionStorage
                     sessionStorage.removeItem('pendingInviteToken');
                     
-                    // Reload bands to show new band membership
-                    await this.loadBands();
+                    // Server returned the complete accepted tenant document
+                    // Use it immediately to populate local state and PouchDB
+                    console.log('✅ Invitation accepted, received complete tenant from server:', result);
                     
-                    // Switch to the new band if it was just joined
+                    // Save the accepted tenant to local PouchDB immediately
+                    // This makes it available without waiting for sync
+                    if (window.tenantManager?.tenantsDb && result._id) {
+                        try {
+                            await window.tenantManager.tenantsDb.put(result);
+                            console.log('✅ Saved accepted tenant to local PouchDB:', result._id);
+                        } catch (e) {
+                            if (e.status === 409) {
+                                // Conflict - document already exists, try to update
+                                const existing = await window.tenantManager.tenantsDb.get(result._id);
+                                result._rev = existing._rev;
+                                await window.tenantManager.tenantsDb.put(result);
+                                console.log('✅ Updated existing tenant in local PouchDB:', result._id);
+                            } else {
+                                console.warn('⚠️ Could not save tenant to local PouchDB:', e.message);
+                            }
+                        }
+                    }
+                    
+                    // Update local band list
+                    if (!this.userBands.find(b => b._id === result._id)) {
+                        this.userBands.push(result);
+                        console.log('✅ Added accepted tenant to userBands:', result._id);
+                    }
+                    
+                    // Switch to the new band
                     if (result.tenantId) {
                         this.currentBandTenantId = result.tenantId;
                         DB.setTenant(result.tenantId);
@@ -224,7 +252,15 @@
                 }
             } catch (e) {
                 console.error('❌ Error accepting invitation:', e);
-                this.showSnackbar('Error accepting invitation: ' + e.message, 'error');
+                // Distinguish network errors from other errors
+                if (e instanceof TypeError) {
+                    // Network error (no connection, CORS, etc)
+                    console.error('Network error - cannot reach server');
+                    this.showSnackbar('Cannot reach server. Please check your internet connection.', 'error');
+                } else {
+                    // HTTP error or other
+                    this.showSnackbar('Error accepting invitation: ' + e.message, 'error');
+                }
                 return false;
             }
         },
@@ -251,10 +287,15 @@
             }
 
             if (window.Clerk) {
+                // On localhost, don't append /roady to redirect URLs (Clerk doesn't need it)
+                const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+                const redirectPath = isLocalhost ? '' : '/roady';
+                const baseUrl = window.location.origin + redirectPath;
+                
                 await Clerk.load({
-                    afterSignInUrl: window.location.origin + '/roady',
-                    afterSignUpUrl: window.location.origin + '/roady',
-                    afterSignOutUrl: window.location.origin + '/roady'
+                    afterSignInUrl: baseUrl,
+                    afterSignUpUrl: baseUrl,
+                    afterSignOutUrl: baseUrl
                 });
             } else {
                 console.error('❌ Clerk failed to load');
@@ -270,8 +311,10 @@
                 const mainContent = document.querySelector('main.container');
                 if (mainContent) {
                     mainContent.innerHTML = '<div id="sign-in-container" style="display: flex; justify-content: center; margin-top: 2rem;"></div>';
+                    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+                    const redirectPath = isLocalhost ? '' : '/roady';
                     Clerk.mountSignIn(document.getElementById('sign-in-container'), {
-                        redirectUrl: window.location.origin + '/roady'
+                        redirectUrl: window.location.origin + redirectPath
                     });
                 }
                 return;
@@ -1450,49 +1493,29 @@
 
         // Band management methods
         async loadBands() {
-            try {
-                // Refresh tenant list from server (not cached)
-                if (!window.tenantManager) {
-                    console.error('❌ TenantManager not available');
-                    return;
-                }
-                
-                // Reload tenants from server to get latest (including newly created bands)
-                const tenantsResponse = await window.tenantManager.getMyTenants();
-                this.userBands = Array.isArray(tenantsResponse) ? tenantsResponse : [];
-                console.log('✅ Bands refreshed from server:', this.userBands);
-                
-                // Load band info document for each band to get proper band names
-                // Use parallel loading without context switching for efficiency
-                const bandLoadPromises = this.userBands.map(async (band) => {
-                    try {
-                        // Get the tenant ID (should be _id from the virtual endpoint)
-                        const bandId = band._id;
-                        if (!bandId) {
-                            console.warn('⚠️ Band missing _id:', band);
-                            band.bandName = band.name || 'Unknown Band';
-                            return;
-                        }
-                        
-                        // Load band-info directly without context switching (more efficient)
-                        const bandInfo = await DB.getBandInfoForTenant(bandId);
-                        if (bandInfo && bandInfo.name) {
-                            band.bandName = bandInfo.name;
-                            console.log(`✅ Loaded band-info for ${bandId}: "${bandInfo.name}"`);
-                        } else {
-                            console.warn(`⚠️ No band-info found for ${bandId}, using server name fallback`);
-                            // Use name from server response as fallback
-                            band.bandName = band.name || bandId;
-                        }
-                    } catch (e) {
-                        console.error(`❌ Error loading band-info for ${band._id}:`, e);
-                        // Use server name as fallback on any error
-                        band.bandName = band.name || band._id || 'Unknown Band';
-                    }
-                });
-                
-                // Wait for all band info loads to complete (parallel execution)
-                await Promise.all(bandLoadPromises);
+             try {
+                 // Refresh tenant list from server (not cached)
+                 if (!window.tenantManager) {
+                     console.error('❌ TenantManager not available');
+                     return;
+                 }
+                 
+                 // Reload tenants from server to get latest (including newly created tenants)
+                 const tenantsResponse = await window.tenantManager.getMyTenants();
+                 this.userBands = Array.isArray(tenantsResponse) ? tenantsResponse : [];
+                 console.log('✅ Tenants refreshed from server:', this.userBands);
+                 
+                 // VALIDATION: Check if user.tenants was corrupted with full tenant documents
+                 // This catches the data corruption bug described in INVITATION_ACCEPTANCE_CODE_REVIEW.md
+                 if (window.tenantManager?.localUserDoc) {
+                     const validation = window.tenantManager.validateUserTenantsFormat(window.tenantManager.localUserDoc);
+                     if (!validation.valid) {
+                         window.tenantManager.logValidationErrors(validation);
+                         console.error('⚠️ Detected data corruption in user.tenants - see INVITATION_ACCEPTANCE_CODE_REVIEW.md for details');
+                         // Continue anyway, but alert user
+                         this.showSnackbar('⚠️ Data integrity issue detected. Please refresh the page.', 'warning');
+                     }
+                 }
                 
                 // Determine which band to select
                 // Priority: 1) Already selected (don't override), 2) Last selected band, 3) Current tenant from tenantManager, 4) First band
@@ -1528,8 +1551,8 @@
 
         updateCurrentBandName() {
             const currentBand = this.userBands.find(b => b._id === this.currentBandTenantId);
-            // Band-info is always the source of truth
-            this.currentBandName = currentBand?.bandName || '';
+            // Use tenant name field (standard across all apps)
+            this.currentBandName = currentBand?.name || '';
         },
 
         async switchBand(bandTenantId) {
@@ -1616,7 +1639,8 @@
                 // Backend API ensures proper registration in couch-sitter for cascade deletion
                 try {
                     console.log('📤 Creating band via /api/tenants backend endpoint:', bandName);
-                    const response = await fetch(`${this.options.mycouchBaseUrl}/api/tenants`, {
+                    const baseUrl = this.options.mycouchBaseUrl.replace(/\/$/, ''); // Remove trailing slash if present
+                    const response = await fetch(`${baseUrl}/api/tenants`, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
@@ -1631,8 +1655,12 @@
                     }
 
                     const tenantResponse = await response.json();
-                    const newBandId = tenantResponse._id; // Use the tenant ID from server
-                    console.log('✅ Band created via /api/tenants with applicationId:', tenantResponse);
+                    // Backend returns _id in internal format (tenant_uuid), extract virtual ID
+                    let newBandId = tenantResponse._id;
+                    if (newBandId.startsWith('tenant_')) {
+                        newBandId = newBandId.substring(7); // Strip "tenant_" prefix to get virtual ID
+                    }
+                    console.log('✅ Band created via /api/tenants with applicationId:', tenantResponse, 'Virtual ID:', newBandId);
                     
                     this.showCreateBandDialog = false;
                     this.newBandName = '';
@@ -1640,14 +1668,29 @@
                     // Create band-info document in the new tenant's roady database
                     try {
                         const currentTenant = DB.tenant;
+                        console.log('📝 Setting tenant to new band:', newBandId);
                         DB.setTenant(newBandId);
+                        console.log('📝 Saving band-info for:', newBandId, 'with name:', bandName);
                         const result = await DB.saveBandInfo({ name: bandName });
                         console.log('✅ Created band-info document for:', newBandId, 'Result:', result);
                         if (currentTenant) {
                             DB.setTenant(currentTenant);
                         }
                     } catch (e) {
-                        console.error('❌ Failed to create band-info for', newBandId, ':', e);
+                        console.error('❌ Failed to create band-info for', newBandId);
+                        console.error('   Error:', e.message || e);
+                        console.error('   Full error:', e);
+                    }
+                    
+                    // Get current user ID to include in userIds list
+                    let currentUserId = null;
+                    try {
+                        const user = await Clerk.user;
+                        if (user?.id) {
+                            currentUserId = user.id;
+                        }
+                    } catch (e) {
+                        console.warn('Could not get user ID from Clerk');
                     }
                     
                     // Construct tenant doc for local PouchDB (must match server format)
@@ -1656,10 +1699,9 @@
                         type: 'tenant',
                         tenantId: newBandId,  // Virtual ID
                         name: bandName,
-                        bandName: bandName,
                         role: 'owner',
-                        personal: false,
                         memberCount: 1,
+                        userIds: currentUserId ? [currentUserId] : [],  // Member list
                         createdAt: new Date().toISOString(),
                         syncedAt: new Date().toISOString()
                     };
@@ -1684,20 +1726,49 @@
                     }
                     console.log('✅ Added new band to local lists:', newTenant);
                     
+                    // Reload user document from server to get fresh tenants array with userIds
+                    // This ensures band members can be loaded immediately after creation
+                    console.log('🔄 Fetching fresh user document from server to sync tenants array...');
+                    try {
+                        const freshTenants = await window.tenantManager?.getMyTenantsFromServer?.();
+                         if (freshTenants && freshTenants.length > 0) {
+                             console.log('✅ Loaded fresh tenants with userIds from server:', freshTenants);
+                             this.userBands = freshTenants;
+                             // ⚠️ DO NOT UPDATE POUCHDB HERE - See INVITATION_ACCEPTANCE_CODE_REVIEW.md
+                             // The server's GET /__tenants returns full tenant documents with _id, type, etc.
+                             // But user.tenants should have format: {tenantId, role, personal, joinedAt, userIds}
+                             // Assigning full tenant docs to user.tenants corrupts the data.
+                             // Let PouchDB's normal sync process update the local user document correctly.
+                             console.log('✅ User tenants already synced via backend during band creation');
+                             console.log('   Do not overwrite user.tenants with full tenant documents');
+                         }
+                    } catch (e) {
+                        console.warn('⚠️ Failed to reload tenants after band creation:', e);
+                        // Continue anyway - band was created, PouchDB will sync eventually
+                    }
+                    
                     // Switch to new band (becomes active in JWT)
                     await this.switchBand(newBandId);
                     this.showSnackbar(`Created new band: ${bandName}`);
-                    } catch (e) {
+                } catch (e) {
                     console.error('❌ Failed to create band via backend:', e);
-                    this.showSnackbar('Error creating band: ' + e.message, 'error');
-                    } finally {
-                    this.isCreatingBand = false;
+                    // Distinguish network errors from server errors
+                    if (e instanceof TypeError) {
+                        // Network error (no connection, CORS, etc)
+                        console.error('Network error - cannot reach server');
+                        this.showSnackbar('Cannot reach server. Please check your internet connection.', 'error');
+                    } else {
+                        // HTTP error or other
+                        this.showSnackbar('Error creating band: ' + e.message, 'error');
                     }
-                    } catch (e) {
-                    console.error('Error creating band:', e);
-                    this.showSnackbar('Error creating band', 'error');
+                } finally {
                     this.isCreatingBand = false;
-                    }
+                }
+            } catch (outerError) {
+                console.error('❌ Unexpected error in band creation:', outerError);
+                this.showSnackbar('Error creating band: ' + outerError.message, 'error');
+                this.isCreatingBand = false;
+            }
         },
 
         // Band settings methods
@@ -1705,19 +1776,27 @@
             if (!this.currentBandTenantId) return;
             
             try {
-                // Set tenant context for getBandInfo
+                // CRITICAL: Use tenant name from userBands (server source of truth)
+                // NOT from local band-info document which may be stale
+                const currentBand = this.userBands.find(b => b._id === this.currentBandTenantId);
+                const tenantName = currentBand?.name;
+                
+                // Set tenant context for getBandInfo (for other band-specific data if needed)
                 DB.setTenant(this.currentBandTenantId);
                 const bandInfo = await DB.getBandInfo();
-                if (bandInfo) {
-                    this.bandBeingEdited = { name: bandInfo.name };
-                    this.bandNameOriginal = bandInfo.name;
-                    this.currentBandName = bandInfo.name;
-                    console.log('✅ Band info loaded:', bandInfo);
-                } else {
-                    console.warn('⚠️ No band-info document found, using current band name');
-                    this.bandBeingEdited = { name: this.currentBandName };
-                    this.bandNameOriginal = this.currentBandName;
-                }
+                
+                // Use tenant name as source of truth, fallback to band-info if needed
+                const nameToUse = tenantName || bandInfo?.name || this.currentBandName;
+                
+                this.bandBeingEdited = { name: nameToUse };
+                this.bandNameOriginal = nameToUse;
+                this.currentBandName = nameToUse;
+                
+                console.log('✅ Band details loaded:', { 
+                    tenantName, 
+                    bandInfoName: bandInfo?.name,
+                    finalName: nameToUse 
+                });
             } catch (e) {
                 console.error('❌ Error loading band details:', e);
             }
@@ -1726,29 +1805,64 @@
         },
 
         async loadBandMembers() {
-            // Members are already loaded in /__tenants response
-            // Get members from current band info if available
+            // Members are in userIds array in the tenant document
             console.log('🔍 loadBandMembers: currentBandTenantId =', this.currentBandTenantId);
             console.log('🔍 userBands available:', this.userBands.map(b => ({ _id: b._id, tenantId: b.tenantId, name: b.name })));
-            
+
             // Strip "tenant_" prefix from currentBandTenantId for comparison
             const virtualTenantId = this.currentBandTenantId.replace('tenant_', '');
             console.log('🔍 Virtual tenant ID:', virtualTenantId);
-            
+
             // Find by either _id or tenantId
-            const bandInfo = this.userBands.find(b => 
+            const tenantDoc = this.userBands.find(b =>
                 b._id === virtualTenantId || b.tenantId === virtualTenantId || b._id === this.currentBandTenantId
             );
-            console.log('🔍 Found bandInfo:', bandInfo);
-            console.log('🔍 bandInfo.members:', bandInfo?.members);
-            
-            if (bandInfo && bandInfo.members && Array.isArray(bandInfo.members)) {
-                this.currentBandMembers = bandInfo.members;
+            console.log('🔍 Found tenantDoc:', tenantDoc);
+            console.log('🔍 tenantDoc.userIds:', tenantDoc?.userIds);
+
+            // Members are in userIds array - convert to objects with userId property
+            if (tenantDoc && tenantDoc.userIds && Array.isArray(tenantDoc.userIds)) {
+                // Transform user ID strings to member objects for the template
+                this.currentBandMembers = tenantDoc.userIds.map(userId => ({
+                    userId: userId,
+                    name: tenantDoc.members?.find(m => m.userId === userId)?.name || userId.substring(0, 8) + '...',
+                    email: tenantDoc.members?.find(m => m.userId === userId)?.email,
+                    role: tenantDoc.members?.find(m => m.userId === userId)?.role
+                }));
                 console.log('✅ Band members loaded from /__tenants:', this.currentBandMembers);
             } else {
-                console.warn('⚠️ No bandInfo found or no members array. bandInfo:', bandInfo);
+                console.warn('⚠️ No tenantDoc found or no userIds array. tenantDoc:', tenantDoc);
                 this.currentBandMembers = [];
             }
+        },
+
+        getCurrentUserRole() {
+            // Get current user's ID
+            const currentUserId = `user_${window.tenantManager?.currentUserHash}`;
+            if (!currentUserId || !this.currentBandTenantId) {
+                return 'member'; // default fallback
+            }
+
+            // Find current band in userBands
+            const virtualTenantId = this.currentBandTenantId.replace('tenant_', '');
+            const currentBand = this.userBands.find(b =>
+                b._id === virtualTenantId || b.tenantId === virtualTenantId || b._id === this.currentBandTenantId
+            );
+
+            if (!currentBand) {
+                return 'member';
+            }
+
+            // Check role in band.members array
+            if (currentBand.members && Array.isArray(currentBand.members)) {
+                const memberInfo = currentBand.members.find(m => m.userId === currentUserId);
+                if (memberInfo && memberInfo.role) {
+                    return memberInfo.role;
+                }
+            }
+
+            // Fallback: check band.role (from user.tenants)
+            return currentBand.role || 'member';
         },
 
         cancelBandEdit() {
@@ -1762,24 +1876,33 @@
             }
 
             try {
+                // Update tenant document name field (the standard field)
+                const band = this.userBands.find(b => b._id === this.currentBandTenantId);
+                if (band && window.tenantManager?.tenantsDb) {
+                    // Fetch current document from database to get latest _rev
+                    try {
+                        const currentDoc = await window.tenantManager.tenantsDb.get(band._id);
+                        currentDoc.name = this.bandBeingEdited.name;
+                        await window.tenantManager.tenantsDb.put(currentDoc);
+                        console.log('✅ Updated tenant name to:', this.bandBeingEdited.name);
+                        // Update local reference
+                        band.name = this.bandBeingEdited.name;
+                    } catch (e) {
+                        console.error('Error fetching current tenant doc:', e);
+                        throw e;
+                    }
+                }
+                
+                // Save band-info for roady-specific metadata (optional)
                 const bandInfo = {
                     name: this.bandBeingEdited.name,
                     createdAt: new Date().toISOString(),
                     updatedAt: new Date().toISOString()
                 };
-
-                // Save to database (DB.saveBandInfo handles create vs update)
                 await DB.saveBandInfo(bandInfo);
                 
                 // Update app state
                 this.currentBandName = this.bandBeingEdited.name;
-                
-                // Update in userBands list
-                const band = this.userBands.find(b => b._id === this.currentBandTenantId);
-                if (band) {
-                    band.bandName = this.bandBeingEdited.name;
-                }
-                
                 this.bandNameOriginal = this.currentBandName;
                 this.showSnackbar(`Band renamed to ${this.currentBandName}`);
             } catch (e) {
@@ -1795,17 +1918,22 @@
         },
 
         async inviteMember() {
-            // Email is optional (just for reference)
-            try {
-                const token = await Clerk.session?.getToken();
-                const virtualTenantId = this.getVirtualTenantId(this.currentBandTenantId);
-                
-                const body = { role: this.inviteMemberRole };
-                if (this.inviteMemberEmail.trim()) {
-                    body.email = this.inviteMemberEmail.trim();
-                }
-                
-                const response = await fetch(`${this.options.mycouchBaseUrl}/api/tenants/${virtualTenantId}/invitations`, {
+             // Email is optional (just for reference)
+             try {
+                 const token = await Clerk.session?.getToken();
+                 // API expects internal format (with tenant_ prefix)
+                 const tenantId = this.currentBandTenantId.startsWith('tenant_') 
+                     ? this.currentBandTenantId 
+                     : `tenant_${this.currentBandTenantId}`;
+                 
+                 const body = { role: this.inviteMemberRole };
+                 if (this.inviteMemberEmail.trim()) {
+                     body.email = this.inviteMemberEmail.trim();
+                 }
+                 
+                 // Normalize URL: remove trailing slash to avoid double slashes
+                 const baseUrl = this.options.mycouchBaseUrl.replace(/\/$/, '');
+                 const response = await fetch(`${baseUrl}/api/tenants/${tenantId}/invitations`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1824,8 +1952,8 @@
 
                 // Generate shareable link with token
                 const inviteToken = invitationData.token || invitationData.id;
-                const baseUrl = window.location.origin;
-                this.generatedInviteLink = `${baseUrl}?invite_token=${inviteToken}`;
+                const appBaseUrl = window.location.origin;
+                this.generatedInviteLink = `${appBaseUrl}?invite_token=${inviteToken}`;
                 this.generatedInviteToken = inviteToken;
                 
                 // Create message template
@@ -1839,7 +1967,15 @@
                 console.log('✅ Invitation link generated');
             } catch (e) {
                 console.error('Error inviting member:', e);
-                this.showSnackbar('Error generating invitation: ' + e.message, 'error');
+                // Distinguish network errors from server errors
+                if (e instanceof TypeError) {
+                    // Network error (no connection, CORS, etc)
+                    console.error('Network error - cannot reach server');
+                    this.showSnackbar('Cannot reach server. Please check your internet connection.', 'error');
+                } else {
+                    // HTTP error or other
+                    this.showSnackbar('Error generating invitation: ' + e.message, 'error');
+                }
             }
         },
 
@@ -1894,12 +2030,17 @@
         },
 
         async removeMember(member) {
-            try {
-                const token = await Clerk.session?.getToken();
-                const virtualTenantId = this.getVirtualTenantId(this.currentBandTenantId);
-                const userId = member.userId;
+             try {
+                 const token = await Clerk.session?.getToken();
+                 // API expects internal format (with tenant_ prefix)
+                 const tenantId = this.currentBandTenantId.startsWith('tenant_')
+                     ? this.currentBandTenantId
+                     : `tenant_${this.currentBandTenantId}`;
+                 const userId = member.userId;
 
-                const response = await fetch(`${this.options.mycouchBaseUrl}/api/tenants/${virtualTenantId}/members/${userId}`, {
+                 // Normalize URL: remove trailing slash to avoid double slashes
+                 const baseUrl = this.options.mycouchBaseUrl.replace(/\/$/, '');
+                 const response = await fetch(`${baseUrl}/api/tenants/${tenantId}/members/${userId}`, {
                     method: 'DELETE',
                     headers: {
                         'Authorization': `Bearer ${token}`
@@ -1918,16 +2059,102 @@
 
                 // Remove from local list
                 this.currentBandMembers = this.currentBandMembers.filter(m => m.userId !== userId);
-                
+
                 const memberEmail = member.email || member.name || 'Unknown User';
                 this.showSnackbar(`Removed ${memberEmail} from the band`);
                 console.log('✅ Member removed:', userId);
-                
+
                 // Reload band details to sync
                 await this.loadBandMembers();
             } catch (e) {
                 console.error('Error removing member:', e);
-                this.showSnackbar('Error removing member: ' + e.message, 'error');
+                // Distinguish network errors from server errors
+                if (e instanceof TypeError) {
+                    // Network error (no connection, CORS, etc)
+                    console.error('Network error - cannot reach server');
+                    this.showSnackbar('Cannot reach server. Please check your internet connection.', 'error');
+                } else {
+                    // HTTP error or other
+                    this.showSnackbar('Error removing member: ' + e.message, 'error');
+                }
+            }
+        },
+
+        async confirmLeaveBand() {
+            const currentBand = this.userBands.find(b => b._id === this.currentBandTenantId || b.tenantId === this.currentBandTenantId);
+            const bandName = currentBand?.name || 'Unknown Band';
+
+            const confirmed = await this.showConfirmation(
+                'Leave Band',
+                `Are you sure you want to leave "${bandName}"? You will lose access to all equipment and gigs in this band.`,
+                'Leave Band',
+                true  // danger style
+            );
+
+            if (confirmed) {
+                await this.leaveBand();
+            }
+        },
+
+        async leaveBand() {
+            try {
+                const bandToLeave = this.userBands.find(b => b._id === this.currentBandTenantId || b.tenantId === this.currentBandTenantId);
+                const leavingBandName = bandToLeave?.name || 'Unknown Band';
+
+                // Get current user's ID (hashed format: user_<hash>)
+                const currentUserId = `user_${window.tenantManager.currentUserHash}`;
+
+                // API expects internal format (with tenant_ prefix)
+                const tenantId = this.currentBandTenantId.startsWith('tenant_')
+                    ? this.currentBandTenantId
+                    : `tenant_${this.currentBandTenantId}`;
+
+                const token = await Clerk.session?.getToken();
+                const baseUrl = this.options.mycouchBaseUrl.replace(/\/$/, '');
+
+                const response = await fetch(`${baseUrl}/api/tenants/${tenantId}/members/${currentUserId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    if (response.status === 403) {
+                        this.showSnackbar('Owners cannot leave. Transfer ownership or delete the band.', 'error');
+                    } else {
+                        const error = await response.json();
+                        throw new Error(error.detail || 'Failed to leave band');
+                    }
+                    return;
+                }
+
+                // Remove from local list
+                this.userBands = this.userBands.filter(b => b._id !== this.currentBandTenantId && b.tenantId !== this.currentBandTenantId);
+
+                // Switch to first available band
+                if (this.userBands.length > 0) {
+                    this.currentBandTenantId = this.userBands[0]._id;
+                    this.updateCurrentBandName();
+                    DB.setTenant(this.userBands[0]._id);
+                    await this.loadData();
+                    await this.loadBandDetails();
+                } else {
+                    // No more bands - show empty state
+                    this.currentBandTenantId = null;
+                    this.currentBandName = '';
+                }
+
+                this.showSnackbar(`Left "${leavingBandName}"`);
+                console.log('✅ Successfully left band:', leavingBandName);
+
+            } catch (e) {
+                console.error('Error leaving band:', e);
+                if (e instanceof TypeError) {
+                    this.showSnackbar('Cannot reach server. Please check your internet connection.', 'error');
+                } else {
+                    this.showSnackbar('Error leaving band: ' + e.message, 'error');
+                }
             }
         },
 

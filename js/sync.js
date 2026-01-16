@@ -71,6 +71,15 @@ window.Sync = {
                     try {
                         // Add auth token to all sync requests
                         const authenticatedOpts = await window.Auth.authenticatedFetch(url, opts);
+                        
+                        // Validate we got a valid auth header before sending
+                        if (!authenticatedOpts.headers?.Authorization) {
+                            console.warn('[Sync fetch] No auth header in response from authenticatedFetch');
+                            // Don't send unauthenticated - this causes 401s
+                            // Instead, throw so caller knows auth failed
+                            throw new Error('No authorization header available');
+                        }
+                        
                         console.debug('[Sync fetch]', {
                             url,
                             method: authenticatedOpts.method || 'GET',
@@ -79,8 +88,10 @@ window.Sync = {
                         });
                         return fetch(url, authenticatedOpts);
                     } catch (err) {
-                        console.warn('[Sync fetch] Could not get auth token for sync:', err);
-                        return fetch(url, opts);
+                        console.error('[Sync fetch] Failed to authenticate sync request:', err);
+                        // Don't fallback to unauthenticated requests - this causes 401s
+                        // Instead, fail the request so PouchDB knows auth failed and retries
+                        throw err;
                     }
                 }
             };
