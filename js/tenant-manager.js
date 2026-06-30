@@ -168,6 +168,23 @@ class TenantManager {
         return t;
     }
 
+    async createInvitation(tenantId, { role, email } = {}) {
+        const tid = _internalId(tenantId);
+        const url = `${this._base()}/api/tenants/${encodeURIComponent(tid)}/invitations`;
+        const body = { role };
+        if (email && email.trim()) body.email = email.trim();
+        const res = await window.Auth.fetchWithAuth(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+            const text = await res.text().catch(() => '');
+            throw new Error(`createInvitation ${res.status}: ${text}`);
+        }
+        return await res.json();
+    }
+
     async deleteTenant(tenantId) {
         const tid = _internalId(tenantId);
         const url = `${this._base()}/api/tenants/${encodeURIComponent(tid)}`;

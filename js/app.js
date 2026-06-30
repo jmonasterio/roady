@@ -2269,32 +2269,13 @@
         async inviteMember() {
              // Email is optional (just for reference)
              try {
-                 // API expects internal format (with tenant_ prefix)
-                 const tenantId = this.currentBandTenantId.startsWith('tenant_')
-                     ? this.currentBandTenantId
-                     : `tenant_${this.currentBandTenantId}`;
-
-                 const body = { role: this.inviteMemberRole };
-                 if (this.inviteMemberEmail.trim()) {
-                     body.email = this.inviteMemberEmail.trim();
-                 }
-
-                 const baseUrl = this.options.mycouchBaseUrl.replace(/\/$/, '');
-                 const response = await window.Auth.fetchWithAuth(
-                    `${baseUrl}/api/tenants/${tenantId}/invitations`,
-                    {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(body),
-                    },
+                // Route through TenantManager so the request uses the resolved
+                // /__api__ base. Building from raw options.mycouchBaseUrl ('')
+                // hits same-origin /api/... and 405s past the proxy.
+                const invitationData = await window.tenantManager.createInvitation(
+                    this.currentBandTenantId,
+                    { role: this.inviteMemberRole, email: this.inviteMemberEmail },
                 );
-
-                if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.detail || 'Failed to generate invitation');
-                }
-
-                const invitationData = await response.json();
                 console.log('✅ Invitation created:', invitationData);
 
                 // Generate shareable link with token

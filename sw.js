@@ -27,9 +27,24 @@ self.addEventListener('activate', event => {
 
 // Fetch - Network first, cache fallback (best for development!)
 self.addEventListener('fetch', event => {
+  const req = event.request;
+
+  // Cache API only supports GET — never intercept mutations (POST/PUT/DELETE),
+  // or `cache.put` throws "Request method 'X' is unsupported".
+  if (req.method !== 'GET') return;
+
+  let url;
+  try { url = new URL(req.url); } catch (_) { return; }
+
+  // Never cache API / proxy traffic — it's authed and dynamic; serving a
+  // stale cached copy would hand back another user's / expired data.
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/__api__/')) {
+    return;
+  }
+
   // Skip cross-origin requests except CDN
-  if (!event.request.url.startsWith(self.location.origin) &&
-    !event.request.url.includes('cdn.jsdelivr.net')) {
+  if (!req.url.startsWith(self.location.origin) &&
+    !req.url.includes('cdn.jsdelivr.net')) {
     return;
   }
 
