@@ -103,6 +103,87 @@ Specific scheduled gigs with their checklists.
 
 ---
 
+### 4. Song Catalog (`song`)
+
+Reusable songs the band performs. Master catalog referenced by set list templates and instances (analogous to the Equipment Catalog).
+
+```javascript
+{
+  _id: "song_[timestamp]",
+  _rev: "[pouch_revision]",
+  type: "song",                // Document type
+  tenant: "String",            // Tenant ID (e.g., "demo", "band-name")
+  title: "String",             // Required, e.g., "Sweet Home Alabama"
+  artist: "String",            // Optional (cover vs. original)
+  durationSec: Number,         // Optional, powers runtime totals
+  key: "String",               // Optional, e.g., "Am", "E"
+  bpm: Number,                 // Optional tempo
+  lead: "String",              // Optional, who fronts the song
+  notes: "String",             // Optional cue (e.g., "segue", "capo 2")
+  createdAt: "ISO8601 timestamp"
+}
+```
+
+**Purpose**: Master catalog of songs that can be added to set list templates and per-gig set lists.
+
+> Field set is provisional (see `SETLIST_FEATURE_PLAN.md` §2.1); `title` is the only required field.
+
+---
+
+### 5. Set List Templates (`setlist_template`)
+
+Reusable, sectioned set lists managed on the Set List page. Each section holds an ordered list of song references with a denormalized snapshot for resilience to catalog edits/deletes.
+
+```javascript
+{
+  _id: "setlist_template_[timestamp]",
+  _rev: "[pouch_revision]",
+  type: "setlist_template",    // Document type
+  tenant: "String",            // Tenant ID
+  name: "String",              // e.g., "Bar Show 90min", "Acoustic Brunch"
+  sections: [
+    {
+      id: "sec_[n]",           // Stable within the document
+      name: "String",          // e.g., "Set 1", "Encore"
+      items: [
+        {
+          songId: "String",    // Reference to song._id
+          title: "String",     // Snapshot (survives catalog edits/deletes)
+          durationSec: Number  // Snapshot for runtime calc
+        }
+      ]
+    }
+  ],
+  createdAt: "ISO8601 timestamp"
+}
+```
+
+**Purpose**: Reusable templates copied onto a gig to create a per-gig set list.
+
+---
+
+### 6. Set List Instances (`setlist`)
+
+A per-gig set list: a frozen **copy** of a template (or blank), attached 1:1 to a gig and edited only from the gig. Same structure as a template plus a gig back-reference and template provenance.
+
+```javascript
+{
+  _id: "setlist_[timestamp]",
+  _rev: "[pouch_revision]",
+  type: "setlist",             // Document type
+  tenant: "String",            // Tenant ID
+  gigId: "String",             // Owning gig (gigs._id), 1:1 in v1
+  sourceTemplateId: "String",  // setlist_template._id or null (provenance, NOT a live link)
+  name: "String",              // Defaults to gig or template name
+  sections: [ /* same shape as setlist_template.sections */ ],
+  createdAt: "ISO8601 timestamp"
+}
+```
+
+**Purpose**: The actual set list for one show — viewed live, printed, edited per gig. Edits never propagate back to the template (explicit "Save as new template" / "Update source template" actions only).
+
+---
+
 ## Entity Relationships
 
 ```

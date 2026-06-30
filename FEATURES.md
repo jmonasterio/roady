@@ -199,6 +199,63 @@ Delete buttons in edit dialogs now wrap to multiple lines if needed.
 
 ---
 
+## 11. Set Lists
+
+### Overview
+Plan the songs for a show, attach a set list to a gig, and view it live or print
+it. Reuses the template → instance copy pattern (the same shape as
+`gig_type` → `gig`) but for songs instead of equipment.
+
+### Building blocks
+- **Song Catalog** (`song`) — a reusable library of songs. Fields: `title`
+  (required), plus optional `artist`, `durationSec`, `key`, `bpm`, `lead`,
+  `notes`. Create/edit/delete with snackbar undo, tenant-isolated.
+- **Set List Templates** (`setlist_template`) — ordered, sectioned references to
+  catalog songs (Set 1, Set 2, Encore…). Managed on the **Set List** top-menu
+  page (Songs + Templates tabs). Create blank, duplicate, edit, delete (undo).
+- **Set List Instances** (`setlist`) — a frozen **copy** of a template (or a
+  blank list) attached 1:1 to a gig, edited only from the gig.
+
+### Copy semantics
+Picking a template for a gig deep-copies its sections into a new `setlist`
+(re-snapshotting each song's `title`/`durationSec` from the live catalog) and
+records `sourceTemplateId` as provenance only. Editing the gig's set list
+**never** writes back to the template. Two explicit actions bridge them:
+- **Save as new template** — create a template from the current set list.
+- **Update source template** — overwrite the source template (confirm-gated;
+  shown only when the set list was copied from a template).
+
+### Resilience
+Each section item carries a denormalized `title`/`durationSec` snapshot, so a
+set list still renders after a catalog song is edited or deleted (orphaned
+songs are flagged "(removed)"). Same tolerance the app has for orphaned
+equipment ids.
+
+### Live view + print
+- **Performance view** — full-screen, large high-contrast text, scrollable;
+  each person opens it independently. Requests a screen wake lock when
+  supported. No shared "now playing" cursor in v1.
+- **Print / PDF** — `@media print` styles produce a clean black-on-white sheet
+  (browser print dialog covers "Save as PDF"). No new dependency.
+
+### API (`js/db.js`)
+- Songs: `getAllSongs` / `getDeletedSongs` / `addSong` / `updateSong` /
+  `deleteSong` / `restoreSong`
+- Templates: `getAllSetlistTemplates` / `getDeletedSetlistTemplates` /
+  `addSetlistTemplate` / `updateSetlistTemplate` / `deleteSetlistTemplate` /
+  `restoreSetlistTemplate` / `duplicateSetlistTemplate`
+- Instances: `getSetlistForGig` / `addSetlistFromTemplate` / `addBlankSetlist` /
+  `updateSetlist` / `deleteSetlist` / `restoreSetlist`
+- All route through `_listByType` (reads) and `_putLocal` (writes), so outbox
+  sync + soft-delete come for free.
+
+### Non-goals (v1)
+Cross-device synced "now playing" cursor; multiple set lists per gig;
+per-placement song overrides; drag-and-drop reorder (up/down buttons in v1);
+lyrics/chord charts; external imports.
+
+---
+
 ## Database Schema Changes
 
 ### All Document Types Now Include

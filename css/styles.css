@@ -601,3 +601,179 @@ main.container {
 }
 
 /* Pico CSS already handles dark theme - no overrides needed */
+
+/* ===============================================================
+   Set list feature
+   =============================================================== */
+
+/* Section card in the set list editor */
+.setlist-section {
+    border: 1px solid var(--pico-form-element-border-color);
+    border-radius: var(--pico-border-radius);
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.setlist-section-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.setlist-section-head .button-group button {
+    min-width: auto;
+    padding: 0.25rem 0.5rem;
+}
+
+/* Ordered song lists (editor + gig view) */
+.setlist-song-list {
+    margin: 0.25rem 0 0.5rem 1.25rem;
+    padding: 0;
+}
+
+.setlist-song-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0;
+}
+
+.setlist-song-row .button-group button,
+.setlist-song-row button {
+    min-width: auto;
+    padding: 0.15rem 0.45rem;
+}
+
+.setlist-song-title {
+    font-weight: 500;
+}
+
+/* Add-song control row */
+.setlist-add-song {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 0.5rem;
+}
+
+.setlist-add-song select,
+.setlist-add-song input {
+    margin: 0;
+    flex: 1;
+    min-width: 8rem;
+}
+
+.setlist-add-song button {
+    margin: 0;
+    min-width: auto;
+}
+
+.setlist-view-section ol {
+    margin: 0.25rem 0 0.5rem 1.25rem;
+}
+
+/* ---------------------------------------------------------------
+   Performance (live) view — full-screen, large, high-contrast
+   --------------------------------------------------------------- */
+.performance-view {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    overflow-y: auto;
+    background: #000;
+    color: #fff;
+    padding: 1.5rem;
+}
+
+.performance-inner {
+    max-width: 960px;
+    margin: 0 auto;
+}
+
+.performance-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.performance-title {
+    margin: 0 0 1rem 0;
+    font-size: clamp(1.75rem, 5vw, 3rem);
+}
+
+.performance-section {
+    margin-bottom: 1.5rem;
+}
+
+.performance-section h3 {
+    font-size: clamp(1.25rem, 3.5vw, 2rem);
+    border-bottom: 2px solid currentColor;
+    padding-bottom: 0.25rem;
+    margin-bottom: 0.5rem;
+}
+
+.performance-section ol {
+    margin: 0;
+    padding-left: 2rem;
+}
+
+.performance-section li {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    font-size: clamp(1.25rem, 4vw, 2.25rem);
+    line-height: 1.5;
+}
+
+.performance-section .perf-meta {
+    opacity: 0.6;
+    font-size: 0.7em;
+    white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------
+   Print / PDF — clean black-on-white sheet of the performance view
+   --------------------------------------------------------------- */
+@media print {
+    @page {
+        margin: 1.5cm;
+    }
+
+    nav,
+    main,
+    .no-print {
+        display: none !important;
+    }
+
+    .performance-view {
+        position: static !important;
+        display: block !important;
+        background: #fff !important;
+        color: #000 !important;
+        padding: 0 !important;
+        overflow: visible !important;
+    }
+
+    .performance-view * {
+        color: #000 !important;
+    }
+
+    .performance-section {
+        page-break-inside: avoid;
+    }
+
+    .performance-section li {
+        font-size: 14pt;
+    }
+
+    .performance-title {
+        font-size: 22pt;
+    }
+
+    .performance-section h3 {
+        font-size: 16pt;
+    }
+}

@@ -78,6 +78,52 @@ A specific scheduled performance on a particular date.
 
 ---
 
+### Song
+An individual song the band performs, stored in the reusable Song Catalog.
+
+**Components**: Title (required); optional artist, duration, key, BPM, lead, notes
+
+**Database**: `song` collection
+
+---
+
+### Song Catalog
+The master list of all songs available to add to set lists.
+
+**UI Location**: Set List page → Songs tab
+
+---
+
+### Set List Template
+A reusable, sectioned list of songs (Set 1, Set 2, Encore, …) copied onto a gig to create a per-gig set list.
+
+**Examples**: "Bar Show 90min", "Acoustic Brunch", "Festival Main Set"
+
+**Database**: `setlist_template` collection (sections of song references)
+
+**UI Location**: Set List page → Templates tab
+
+---
+
+### Set List (or "Set List Instance")
+The actual set list for one specific gig — a frozen copy of a template (or blank), edited only from the gig, and viewed live or printed by the band and crew.
+
+**Components**: Gig reference, optional source-template provenance, sections of songs
+
+**Database**: `setlist` collection (1:1 with a gig in v1)
+
+---
+
+### Section / Set
+A named group within a set list (e.g., "Set 1", "Encore") holding an ordered list of songs.
+
+---
+
+### Performance View
+A read-only, large-text, scrollable rendering of a gig's set list for live use on a band member's or roady's device. Print-friendly via `@media print`.
+
+---
+
 ## Workflow Terms
 
 ### Leaving for Gig / To Gig

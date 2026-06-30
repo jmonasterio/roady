@@ -1,0 +1,10 @@
+name = "roady"
+compatibility_date = "2025-05-01"
+pages_build_output_dir = "."
+
+# Same-origin proxy to the mycouch worker (E.14).
+# `functions/__api__/[[path]].js` reads this binding to forward API +
+# WebSocket traffic without leaving the Cloudflare edge.
+[[services]]
+binding = "MYCOUCH"
+service = "mycouch"
