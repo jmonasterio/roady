@@ -64,7 +64,7 @@
         showInviteMemberDialog: false,
         showGeneratedInviteLink: false,
         inviteMemberEmail: '',
-        inviteMemberRole: 'editor',
+        inviteMemberRole: 'member',
         generatedInviteLink: '',
         generatedInviteToken: '',
         inviteMessageTemplate: '',
@@ -2262,7 +2262,7 @@
 
         openInviteMemberDialog() {
             this.inviteMemberEmail = '';
-            this.inviteMemberRole = 'editor';
+            this.inviteMemberRole = 'member';
             this.showInviteMemberDialog = true;
         },
 
@@ -2309,7 +2309,7 @@
 
         resetInviteForm() {
             this.inviteMemberEmail = '';
-            this.inviteMemberRole = 'editor';
+            this.inviteMemberRole = 'member';
             this.generatedInviteLink = '';
             this.generatedInviteToken = '';
             this.inviteMessageTemplate = '';
