@@ -21,50 +21,14 @@
     <!-- Stylesheets -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <link rel="stylesheet" href="css/styles.css">
-    <script src="https://cdn.jsdelivr.net/npm/pouchdb@8.0.1/dist/pouchdb.min.js"></script>
-    <script src="https://unpkg.com/nostr-tools@2.5.2/lib/nostr.bundle.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dexie@4.0.10/dist/dexie.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <script src="js/clerk.js"></script>
     <script src="js/auth.js"></script>
     <script src="js/sync.js"></script>
     <script src="js/db.js"></script>
     <script src="js/tenant-manager.js"></script>
     <script src="js/app.js"></script>
 
-    <!-- Clerk Configuration (dynamically loads based on environment) -->
-    <script>
-        // Detect environment and inject correct Clerk script
-        const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        
-        const clerkConfig = isLocalhost ? {
-            publishableKey: 'pk_test_ZGVzaXJlZC1sYWItMjcuY2xlcmsuYWNjb3VudHMuZGV2JA',
-            clerkJsUrl: 'https://desired-lab-27.clerk.accounts.dev/npm/@clerk/clerk-js@5/dist/clerk.browser.js',
-            label: 'DEV'
-        } : {
-            publishableKey: 'pk_live_Y2xlcmsuYXJndy5jb20k',
-            clerkJsUrl: 'https://clerk.argw.com/npm/@clerk/clerk-js@5/dist/clerk.browser.js',
-            label: 'PRODUCTION'
-        };
-        
-        console.log(`🔑 Clerk: Loading ${clerkConfig.label} keys`);
-        
-        // Create and inject Clerk script
-        const script = document.createElement('script');
-        script.async = true;
-        script.crossOrigin = 'anonymous';
-        script.setAttribute('data-clerk-publishable-key', clerkConfig.publishableKey);
-        script.src = clerkConfig.clerkJsUrl;
-        script.type = 'text/javascript';
-        document.head.appendChild(script);
-    </script>
-
-
-
-    <!-- 
-      CRITICAL FIX: We are removing the complex manual initialization script.
-      Instead, we will rely on app.js to handle initialization via x-init.
-      We need to ensure app.js has the robust init logic.
-    -->
 
     <!-- Service Worker Registration -->
     <script>
@@ -86,6 +50,10 @@
 </head>
 
 <body>
+    <!-- Nostr Login Overlay -->
+    <div id="nostr-login-overlay" style="position:fixed;inset:0;z-index:9999;background:var(--pico-background-color,#11111b);display:flex;align-items:center;justify-content:center;padding:1rem;">
+        <div id="nostr-login-card" style="width:100%;max-width:420px;"></div>
+    </div>
     <div x-data="roady" x-cloak @init="init().catch(error => { console.error('❌ App initialization failed:', error); window.fatalError = error; })">
         <nav class="container-fluid">
             <ul>
@@ -108,6 +76,8 @@
                         :class="{ active: currentView === 'equipment' && equipmentTab === 'catalog' }">Equipment</a></li>
                 <li><a href="#" @click.prevent="currentView = 'equipment'; equipmentTab = 'templates'"
                         :class="{ active: currentView === 'equipment' && equipmentTab === 'templates' }">Templates</a></li>
+                <li><a href="#" @click.prevent="currentView = 'setlists'; setlistTab = 'songs'"
+                        :class="{ active: currentView === 'setlists' }">Set List</a></li>
                 <li><a href="#" @click.prevent="currentView = 'members'"
                         :class="{ active: currentView === 'members' }">Members</a></li>
                 <li><a href="#" @click.prevent="currentView = 'settings'"
@@ -117,9 +87,27 @@
                 <li x-show="options.couchDbUrl" style="opacity: 0.7; font-size: 0.85em;" x-text="getSyncStatusText()">
                 </li>
             </ul>
+            <ul x-show="isAuthenticated" style="margin:0;padding:0;list-style:none;">
+                <li style="display:flex;align-items:center;gap:0.5rem;">
+                    <span x-html="nostrAvatarHtml"></span>
+                    <span x-text="nostrDisplayName" style="font-size:0.85rem;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" :title="nostrNpub"></span>
+                    <button class="secondary outline" style="padding:0.2rem 0.6rem;font-size:0.75rem;margin:0;" @click="window.Auth.logout();location.reload()">Sign out</button>
+                </li>
+            </ul>
         </nav>
 
         <main class="container">
+
+            <!-- Signer offline banner — auto-retry backs off and stops to
+                 avoid rate-limiting the remote signer; user reconnects here. -->
+            <div x-show="signerOffline" x-cloak role="alert"
+                style="background: var(--pico-del-color, #d9534f); color: #fff; border-radius: var(--pico-border-radius); padding: 0.75rem 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 1rem;">
+                <span style="flex: 1; font-size: 0.9rem;">⚠️ Can't reach your nostr signer. Approve the request in your signer app, then reconnect.</span>
+                <button @click="reconnect()" class="secondary"
+                    style="margin: 0; white-space: nowrap; padding: 0.375rem 0.75rem; font-size: 0.85rem;">
+                    Reconnect
+                </button>
+            </div>
 
             <!-- Fatal Error Modal -->
             <dialog :open="typeof window.fatalError !== 'undefined' && window.fatalError">
@@ -127,7 +115,7 @@
                     <h3>⚠️ Configuration Error</h3>
                     <p>The application could not start because of a configuration error:</p>
                     <pre style="background: #f0f0f0; padding: 1rem; border-radius: 0.25rem; overflow-x: auto; font-size: 0.85rem;" x-text="window.fatalError?.message || ''"></pre>
-                    <p><strong>Please contact the administrator and ask them to configure Clerk Dashboard with JWT custom claims for <code>active_tenant_id</code>.</strong></p>
+                    <p><strong>The application could not start. Check the console for details.</strong></p>
                 </article>
             </dialog>
 
@@ -243,6 +231,7 @@
                                 <button @click="viewGigDetail(gig._id, 'leavingForGig')" class="contrast">To
                                     Gig</button>
                                 <button @click="viewGigDetail(gig._id, 'leavingFromGig')">From Gig</button>
+                                <button @click="openGigSetlist(gig._id)" class="secondary outline">Set List</button>
                                 <button @click="editGig(gig)" class="secondary outline">Edit</button>
                             </div>
                         </article>
@@ -489,6 +478,88 @@
                         </footer>
                     </article>
                 </dialog>
+
+                <!-- Gig Set List -->
+                <dialog :open="showGigSetlist">
+                    <article style="display: flex; flex-direction: column; height: 100%;">
+                        <header style="display: flex; align-items: center; gap: 1rem;">
+                            <a href="#" @click.prevent="closeGigSetlist()"
+                                style="font-size: 1.5rem; text-decoration: none;">←</a>
+                            <div style="flex: 1;">
+                                <h3 style="margin: 0;">Set List</h3>
+                                <p class="text-muted" style="margin: 0;"
+                                    x-text="selectedGig ? (selectedGig.name || 'Unnamed Gig') : ''"></p>
+                            </div>
+                        </header>
+
+                        <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                            <!-- No set list yet -->
+                            <div x-show="!gigSetlist">
+                                <p class="text-muted">No set list for this gig yet.</p>
+                                <label>Start from a template
+                                    <select x-model="newGigSetlistTemplateId">
+                                        <option value="">Select a template…</option>
+                                        <template x-for="tpl in setlistTemplates" :key="tpl._id">
+                                            <option :value="tpl._id" x-text="tpl.name"></option>
+                                        </template>
+                                    </select>
+                                </label>
+                                <div style="display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap;">
+                                    <button @click="pickTemplateForGig()" :disabled="!newGigSetlistTemplateId">Use Template</button>
+                                    <button @click="startBlankSetlistForGig()" class="secondary outline">Start Blank</button>
+                                </div>
+                                <p x-show="setlistTemplates.length === 0" class="text-muted" style="margin-top: 1rem;">
+                                    Tip: create templates on the Set List page, or just start blank.</p>
+                            </div>
+
+                            <!-- Set list exists — view mode -->
+                            <div x-show="gigSetlist">
+                                <template x-if="gigSetlist">
+                                    <div>
+                                        <p class="text-muted">
+                                            <span x-text="setlistSongCount(gigSetlist)"></span> songs ·
+                                            <span x-text="formatRuntime(setlistTotalDuration(gigSetlist))"></span> total
+                                        </p>
+                                        <template x-for="section in gigSetlist.sections" :key="section.id">
+                                            <div class="setlist-view-section">
+                                                <h4 style="margin: 1rem 0 0.25rem 0;">
+                                                    <span x-text="section.name"></span>
+                                                    <span class="text-muted" style="font-size: 0.8rem; font-weight: normal;"
+                                                        x-text="'(' + formatRuntime(sectionDuration(section)) + ')'"></span>
+                                                </h4>
+                                                <ol class="setlist-song-list">
+                                                    <template x-for="(item, iIndex) in section.items" :key="iIndex">
+                                                        <li class="setlist-song-row">
+                                                            <span class="setlist-song-title" x-text="item.title || '(untitled)'"></span>
+                                                            <span class="text-muted" x-show="item.durationSec" x-text="formatDuration(item.durationSec)"></span>
+                                                        </li>
+                                                    </template>
+                                                    <li x-show="(section.items?.length || 0) === 0" class="text-muted" style="list-style: none;">No songs.</li>
+                                                </ol>
+                                            </div>
+                                        </template>
+                                        <p x-show="(gigSetlist.sections?.length || 0) === 0" class="empty-state">This set list is empty. Tap Edit to add sections and songs.</p>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <footer x-show="gigSetlist"
+                            style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                            <div class="button-group">
+                                <button @click="editGigSetlist()" class="contrast" style="margin: 0;">Edit</button>
+                                <button @click="openPerformanceView(gigSetlist)" class="secondary outline" style="margin: 0;">Performance</button>
+                                <button @click="printSetlist(gigSetlist)" class="secondary outline" style="margin: 0;">Print</button>
+                                <button @click="removeGigSetlist()" class="secondary outline"
+                                    style="background: var(--pico-del-color, #c0392b); color: white; margin: 0;">Remove</button>
+                            </div>
+                            <button @click="closeGigSetlist()" style="margin: 0;">Done</button>
+                        </footer>
+                        <footer x-show="!gigSetlist" style="display: flex; justify-content: flex-end;">
+                            <button @click="closeGigSetlist()" style="margin: 0;">Done</button>
+                        </footer>
+                    </article>
+                </dialog>
             </div>
 
             <!-- Bands View -->
@@ -658,6 +729,195 @@
                     </div>
             </div>
 
+            <!-- Set List View (Songs catalog + Templates) -->
+            <div x-show="currentView === 'setlists'">
+                <hgroup>
+                    <h2>Set Lists</h2>
+                    <p>Build a reusable song catalog and set list templates. Attach a set list to a gig from the gig's "Set List" button.</p>
+                </hgroup>
+
+                <div class="tab-buttons" style="display: flex; gap: 0.5rem;">
+                    <button @click="setlistTab = 'songs'"
+                        :class="setlistTab === 'songs' ? '' : 'secondary outline'">Songs</button>
+                    <button @click="setlistTab = 'templates'"
+                        :class="setlistTab === 'templates' ? '' : 'secondary outline'">Templates</button>
+                </div>
+
+                <!-- Songs tab (catalog) -->
+                <div x-show="setlistTab === 'songs'">
+                    <div class="settings-section-header">
+                        <button @click="showAddSong = true">+ Add Song</button>
+                    </div>
+
+                    <dialog :open="showAddSong || editingSong">
+                        <article style="display: flex; flex-direction: column; height: 100%;">
+                            <header style="display: flex; align-items: center; gap: 1rem;">
+                                <a href="#" @click.prevent="cancelSongEdit()"
+                                    style="font-size: 1.5rem; text-decoration: none;">←</a>
+                                <h3 style="margin: 0;" x-text="editingSong ? 'Edit Song' : 'Add Song'"></h3>
+                            </header>
+                            <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                                <input type="text" x-model="newSong.title" placeholder="Song title (required)" />
+                                <input type="text" x-model="newSong.artist" placeholder="Artist (optional)" />
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                                    <label>Duration (mm:ss)
+                                        <input type="text" x-model="songDurationInput" placeholder="3:45" />
+                                    </label>
+                                    <label>Key
+                                        <input type="text" x-model="newSong.key" placeholder="e.g. Am" />
+                                    </label>
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                                    <label>BPM
+                                        <input type="number" min="0" max="400" x-model.number="newSong.bpm" placeholder="120" />
+                                    </label>
+                                    <label>Lead
+                                        <input type="text" x-model="newSong.lead" placeholder="Who fronts it" />
+                                    </label>
+                                </div>
+                                <textarea x-model="newSong.notes" placeholder="Notes (cues: 'segue', 'capo 2')"></textarea>
+                            </div>
+                            <footer
+                                style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                                <button x-show="editingSong"
+                                    @click="deleteSong(editingSong._id); cancelSongEdit()"
+                                    class="secondary outline"
+                                    style="background: var(--pico-del-color, #c0392b); color: white; margin: 0;">Delete</button>
+                                <button @click="saveSong()" style="margin: 0;">Save</button>
+                            </footer>
+                        </article>
+                    </dialog>
+
+                    <div class="equipment-list">
+                        <template x-for="song in songs" :key="song._id">
+                            <article class="equipment-item">
+                                <div>
+                                    <strong x-text="song.title"></strong>
+                                    <p class="text-muted" style="margin: 0.25rem 0 0 0;">
+                                        <span x-show="song.artist" x-text="song.artist"></span>
+                                        <span x-show="song.artist && song.durationSec"> • </span>
+                                        <span x-show="song.durationSec" x-text="formatDuration(song.durationSec)"></span>
+                                        <span x-show="song.key"> • <span x-text="song.key"></span></span>
+                                        <span x-show="song.bpm"> • <span x-text="song.bpm"></span> bpm</span>
+                                    </p>
+                                </div>
+                                <button @click="editSong(song)" class="contrast">Edit</button>
+                            </article>
+                        </template>
+                        <p x-show="songs.length === 0" class="empty-state">No songs yet. Add the songs your band plays,
+                            then build set list templates from them.</p>
+                    </div>
+                </div>
+
+                <!-- Templates tab -->
+                <div x-show="setlistTab === 'templates'">
+                    <div class="settings-section-header">
+                        <button @click="newSetlistTemplate()">+ New Set List</button>
+                    </div>
+
+                    <div class="equipment-list">
+                        <template x-for="tpl in setlistTemplates" :key="tpl._id">
+                            <article class="equipment-item">
+                                <div>
+                                    <strong x-text="tpl.name"></strong>
+                                    <p class="text-muted" style="margin: 0.25rem 0 0 0;">
+                                        <span x-text="(tpl.sections?.length || 0)"></span> sections ·
+                                        <span x-text="setlistSongCount(tpl)"></span> songs ·
+                                        <span x-text="formatRuntime(setlistTotalDuration(tpl))"></span>
+                                    </p>
+                                </div>
+                                <div class="button-group">
+                                    <button @click="duplicateSetlistTemplate(tpl._id)" class="secondary outline">Duplicate</button>
+                                    <button @click="editSetlistTemplate(tpl)" class="contrast">Edit</button>
+                                </div>
+                            </article>
+                        </template>
+                        <p x-show="setlistTemplates.length === 0" class="empty-state">No set list templates yet. Create
+                            one, add sections (Set 1, Encore…), and fill them with songs from your catalog.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Shared set list editor (templates + gig instances) -->
+            <dialog :open="editingSetlist">
+                <article style="display: flex; flex-direction: column; height: 100%;">
+                    <header style="display: flex; align-items: center; gap: 1rem;">
+                        <a href="#" @click.prevent="closeSetlistEditor()"
+                            style="font-size: 1.5rem; text-decoration: none;">←</a>
+                        <h3 style="margin: 0;"
+                            x-text="editingSetlistKind === 'instance' ? 'Edit Set List' : (editingSetlist && editingSetlist._id ? 'Edit Set List Template' : 'New Set List Template')"></h3>
+                    </header>
+                    <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
+                        <template x-if="editingSetlist">
+                            <div>
+                                <input type="text" x-model="editingSetlist.name" placeholder="Set list name (e.g. 'Bar Show 90min')" />
+                                <p class="text-muted">
+                                    <span x-text="setlistSongCount(editingSetlist)"></span> songs ·
+                                    <span x-text="formatRuntime(setlistTotalDuration(editingSetlist))"></span> total
+                                </p>
+
+                                <template x-for="(section, sIndex) in editingSetlist.sections" :key="section.id">
+                                    <article class="setlist-section" x-data="{ draftSong: '', draftTitle: '' }">
+                                        <div class="setlist-section-head">
+                                            <input type="text" x-model="section.name" placeholder="Section name (e.g. 'Set 1')" style="flex: 1; margin: 0;" />
+                                            <div class="button-group">
+                                                <button @click="moveSetlistSection(sIndex, -1)" class="secondary outline" :disabled="sIndex === 0">↑</button>
+                                                <button @click="moveSetlistSection(sIndex, 1)" class="secondary outline" :disabled="sIndex === editingSetlist.sections.length - 1">↓</button>
+                                                <button @click="deleteSetlistSection(section.id)" class="secondary outline">✕</button>
+                                            </div>
+                                        </div>
+                                        <p class="text-muted" style="margin: 0.25rem 0;">
+                                            <span x-text="(section.items?.length || 0)"></span> songs ·
+                                            <span x-text="formatRuntime(sectionDuration(section))"></span>
+                                        </p>
+                                        <ol class="setlist-song-list">
+                                            <template x-for="(item, iIndex) in section.items" :key="iIndex">
+                                                <li class="setlist-song-row">
+                                                    <span class="setlist-song-title" x-text="item.title || '(untitled)'"></span>
+                                                    <span class="text-muted" x-show="item.durationSec" x-text="formatDuration(item.durationSec)"></span>
+                                                    <span class="warning-text" style="font-size: 0.75rem;"
+                                                        x-show="!songs.some(s => s._id === item.songId)">(removed)</span>
+                                                    <span style="flex: 1;"></span>
+                                                    <button @click="moveSongInSection(section.id, iIndex, -1)" class="secondary outline" :disabled="iIndex === 0">↑</button>
+                                                    <button @click="moveSongInSection(section.id, iIndex, 1)" class="secondary outline" :disabled="iIndex === section.items.length - 1">↓</button>
+                                                    <button @click="removeSongFromSection(section.id, iIndex)" class="secondary outline">✕</button>
+                                                </li>
+                                            </template>
+                                            <li x-show="(section.items?.length || 0) === 0" class="text-muted" style="list-style: none;">No songs yet.</li>
+                                        </ol>
+                                        <div class="setlist-add-song">
+                                            <select x-model="draftSong">
+                                                <option value="">Add from catalog…</option>
+                                                <template x-for="song in songs" :key="song._id">
+                                                    <option :value="song._id" x-text="song.title + (song.artist ? ' — ' + song.artist : '')"></option>
+                                                </template>
+                                            </select>
+                                            <input type="text" x-model="draftTitle" placeholder="…or type a new title" />
+                                            <button @click="if (await addSongToSection(section.id, draftSong, draftTitle)) { draftSong = ''; draftTitle = ''; }">Add</button>
+                                        </div>
+                                    </article>
+                                </template>
+
+                                <button @click="addSetlistSection()" class="secondary outline" style="width: 100%; margin-top: 1rem;">+ Add Section</button>
+                            </div>
+                        </template>
+                    </div>
+                    <footer
+                        style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                        <div class="button-group">
+                            <button x-show="editingSetlistKind === 'template' && editingSetlist && editingSetlist._id"
+                                @click="deleteSetlistTemplate(editingSetlist._id)" class="secondary outline"
+                                style="background: var(--pico-del-color, #c0392b); color: white; margin: 0;">Delete</button>
+                            <button x-show="editingSetlistKind === 'instance'" @click="saveSetlistAsTemplate()"
+                                class="secondary outline" style="margin: 0;">Save as new template</button>
+                            <button x-show="editingSetlistKind === 'instance' && editingSetlist && editingSetlist.sourceTemplateId"
+                                @click="updateSourceTemplate()" class="secondary outline" style="margin: 0;">Update source template</button>
+                        </div>
+                        <button @click="saveSetlistEditor()" style="margin: 0;">Save</button>
+                    </footer>
+                </article>
+            </dialog>
+
             <!-- Members View -->
             <div x-show="currentView === 'members'">
                 <hgroup>
@@ -780,7 +1040,7 @@
                     <button @click="settingsTab = 'myband'" :class="settingsTab === 'myband' ? '' : 'outline'">
                         My Band
                     </button>
-                    <button @click="settingsTab = 'options'; loadJwtToken()" :class="settingsTab === 'options' ? '' : 'outline'">
+                    <button @click="settingsTab = 'options'; loadSessionToken()" :class="settingsTab === 'options' ? '' : 'outline'">
                         Options
                     </button>
                     <button @click="settingsTab = 'trash'; loadDeletedItems()"
@@ -803,6 +1063,102 @@
                             <button @click="saveBandName()">Save Changes</button>
                             <button @click="cancelBandEdit()" class="secondary outline">Cancel</button>
                         </div>
+                    </article>
+
+                    <!-- Band Roster Section -->
+                    <article style="margin-top: 1.5rem; padding: 1.5rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <div>
+                                <h4 style="margin: 0;">Band Roster</h4>
+                                <p class="text-muted" style="margin: 0.25rem 0 0 0; font-size: 0.9rem;">The musicians in your band and their instrument or role</p>
+                            </div>
+                            <button @click="showAddBandMember = true; newBandMember = { name: '', role: '' }"
+                                    x-show="!showAddBandMember"
+                                    class="secondary outline" style="white-space: nowrap;">
+                                + Add Member
+                            </button>
+                        </div>
+
+                        <!-- Add member form -->
+                        <div x-show="showAddBandMember"
+                             style="background: var(--pico-card-background-color, #f8f9fa); border: 1px solid var(--pico-form-element-border-color); border-radius: 6px; padding: 1rem; margin-bottom: 1rem;">
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+                                <label style="margin: 0;">
+                                    Name
+                                    <input type="text" x-model="newBandMember.name"
+                                           placeholder="e.g. Alex Smith"
+                                           @keyup.enter="addBandMember()"
+                                           style="margin-top: 0.25rem;" />
+                                </label>
+                                <label style="margin: 0;">
+                                    Role / Instrument
+                                    <input type="text" x-model="newBandMember.role"
+                                           placeholder="e.g. Lead Guitar"
+                                           @keyup.enter="addBandMember()"
+                                           style="margin-top: 0.25rem;" />
+                                </label>
+                            </div>
+                            <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+                                <button @click="addBandMember()" :disabled="!newBandMember.name.trim()">Add</button>
+                                <button @click="showAddBandMember = false" class="secondary outline">Cancel</button>
+                            </div>
+                        </div>
+
+                        <!-- Roster list -->
+                        <template x-for="member in bandMembers" :key="member._id">
+                            <div style="display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 0; border-bottom: 1px solid var(--pico-form-element-border-color);">
+
+                                <!-- View mode -->
+                                <template x-if="!editingBandMember || editingBandMember._id !== member._id">
+                                    <div style="display: flex; align-items: center; gap: 0.75rem; width: 100%;">
+                                        <div style="flex: 1;">
+                                            <span x-text="member.name" style="font-weight: 500;"></span>
+                                            <span x-show="member.role"
+                                                  x-text="' · ' + member.role"
+                                                  style="color: var(--pico-muted-color); font-size: 0.9rem;"></span>
+                                        </div>
+                                        <button @click="startEditBandMember(member)"
+                                                class="secondary outline" style="padding: 0.3rem 0.7rem; font-size: 0.85rem; margin: 0;">
+                                            Edit
+                                        </button>
+                                        <button @click="deleteBandMember(member)"
+                                                class="secondary outline" style="padding: 0.3rem 0.7rem; font-size: 0.85rem; margin: 0; color: var(--pico-del-color, #c62828);">
+                                            Remove
+                                        </button>
+                                    </div>
+                                </template>
+
+                                <!-- Edit mode -->
+                                <template x-if="editingBandMember && editingBandMember._id === member._id">
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; width: 100%; align-items: end;">
+                                        <label style="margin: 0;">
+                                            <input type="text" x-model="editingBandMember.name"
+                                                   placeholder="Name"
+                                                   @keyup.enter="saveEditBandMember()"
+                                                   style="margin: 0;" />
+                                        </label>
+                                        <label style="margin: 0;">
+                                            <input type="text" x-model="editingBandMember.role"
+                                                   placeholder="Role / Instrument"
+                                                   @keyup.enter="saveEditBandMember()"
+                                                   style="margin: 0;" />
+                                        </label>
+                                        <div style="display: flex; gap: 0.5rem; grid-column: 1 / -1;">
+                                            <button @click="saveEditBandMember()" :disabled="!editingBandMember.name.trim()"
+                                                    style="margin: 0;">Save</button>
+                                            <button @click="cancelEditBandMember()" class="secondary outline"
+                                                    style="margin: 0;">Cancel</button>
+                                        </div>
+                                    </div>
+                                </template>
+
+                            </div>
+                        </template>
+
+                        <p x-show="bandMembers.length === 0 && !showAddBandMember"
+                           class="text-muted" style="text-align: center; padding: 1rem 0; margin: 0;">
+                            No members added yet.
+                        </p>
                     </article>
 
                     <!-- Leave Band Section -->
@@ -845,48 +1201,11 @@
                          <label>
                              MyCouch Server URL
                              <input type="text" x-model="options.mycouchBaseUrl" @change="saveOptions()"
-                                 placeholder="https://db.argw.com" />
+                                placeholder="(empty = same origin via /__api__)" />
                          </label>
 
-                         <label style="margin-top: 1rem; display: block; color: #666; font-size: 0.9rem;">
-                              <strong>Local Database Name (Read-Only)</strong>
-                              <input type="text" x-model="currentDbName" readonly
-                                  style="background-color: #f5f5f5; cursor: not-allowed; color: #666; font-family: monospace; font-size: 0.85rem;" />
-                              <small style="display: block; margin-top: 0.25rem; color: #999;">
-                                  Scoped to server URL and username. Switching CouchDB creates a new local database to avoid data leakage.
-                              </small>
-                          </label>
                          </div>
 
-                         <!-- JWT Token Section -->
-                         <div style="margin-top: 2rem;">
-                          <h4>Authentication</h4>
-                          
-                          <label style="display: block;">
-                              <strong>JWT Token</strong>
-                              <small style="display: block; margin-bottom: 0.5rem; color: #999;">
-                                  Your Clerk authentication token. Click "Copy" to copy to clipboard for testing.
-                              </small>
-                              <div style="display: flex; gap: 0.5rem;">
-                                  <textarea 
-                                      x-model="currentJwtToken" 
-                                      readonly
-                                      style="flex: 1; font-family: monospace; font-size: 0.75rem; background-color: #f5f5f5; color: #666; resize: vertical; min-height: 80px;"
-                                      @click="$event.target.select()"
-                                  ></textarea>
-                                  <button 
-                                      @click="copyJwtToken()"
-                                      style="align-self: flex-start; padding: 0.5rem 1rem; white-space: nowrap;"
-                                      class="secondary"
-                                  >
-                                      📋 Copy
-                                  </button>
-                              </div>
-                              <small x-show="jwtCopied" style="display: block; margin-top: 0.25rem; color: #27ae60;">
-                                  ✓ Copied to clipboard
-                              </small>
-                          </label>
-                         </div>
 
                          </section>
 
@@ -1041,7 +1360,7 @@
             <dialog x-show="showDiagnostics" @click.self="showDiagnostics = false" open>
                 <article>
                     <header>
-                        <h2>JWT & MyCouch Diagnostics</h2>
+                        <h2>Session & MyCouch Diagnostics</h2>
                         <button class="close" @click="showDiagnostics = false"></button>
                     </header>
                     
@@ -1055,7 +1374,7 @@
                     </div>
 
                     <div x-show="$data.diagnosticsResults && $data.diagnosticsResults.jwtClaim">
-                        <h3>📋 JWT Claims</h3>
+                        <h3>📋 Session Claims</h3>
                         <pre style="background: var(--pico-card-background-color); padding: 1rem; border-radius: var(--pico-border-radius); overflow-x: auto; font-size: 0.85em;"><code x-text="$data.diagnosticsResults && $data.diagnosticsResults.jwtClaim ? JSON.stringify($data.diagnosticsResults.jwtClaim, null, 2) : ''"></code></pre>
                         
                         <h3>✅ MyCouch Response</h3>
@@ -1069,7 +1388,102 @@
                 </article>
             </dialog>
         </main>
+
+        <!-- Performance (live) view — full-screen, large text, print surface -->
+        <div x-show="performanceSetlist" class="performance-view" x-cloak>
+            <template x-if="performanceSetlist">
+                <div class="performance-inner">
+                    <div class="performance-toolbar no-print">
+                        <h2 x-text="performanceSetlist.name || 'Set List'" style="margin: 0;"></h2>
+                        <div class="button-group">
+                            <button @click="window.print()" class="secondary outline">Print</button>
+                            <button @click="closePerformanceView()">Close</button>
+                        </div>
+                    </div>
+                    <h1 class="performance-title" x-text="performanceSetlist.name || 'Set List'"></h1>
+                    <template x-for="section in performanceSetlist.sections" :key="section.id">
+                        <div class="performance-section">
+                            <h3 x-text="section.name"></h3>
+                            <ol>
+                                <template x-for="(item, i) in section.items" :key="i">
+                                    <li>
+                                        <span class="perf-title" x-text="item.title || '(untitled)'"></span>
+                                        <span class="perf-meta">
+                                            <span x-show="item.durationSec" x-text="formatDuration(item.durationSec)"></span>
+                                        </span>
+                                    </li>
+                                </template>
+                                <li x-show="(section.items?.length || 0) === 0" style="list-style: none; opacity: 0.6;">—</li>
+                            </ol>
+                        </div>
+                    </template>
+                </div>
+            </template>
+        </div>
     </div>
+    <script type="module">
+        import { NostrAuth, NostrLoginUI, encodeNpub, nuiAvatarHtml, nuiDisplayName } from './js/nostr-universal.js?v=20260305f';
+
+        const APP_NAME = 'roady';
+        const RELAYS   = ['wss://relay.nsec.app', 'wss://relay.damus.io', 'wss://nos.lol'];
+
+        const auth = new NostrAuth({
+            relays:         RELAYS,
+            storageKey:     `nostr_auth_${APP_NAME}`,
+            allowLocalDev:  true,
+            allowGuestMode: true,
+        });
+
+        window.Auth.setAuth(auth);
+        window.encodeNpub = encodeNpub;
+        window.nuiAvatarHtml  = nuiAvatarHtml;
+        window.nuiDisplayName = nuiDisplayName;
+
+        let _sessionReady = false;
+        const overlay = document.getElementById('nostr-login-overlay');
+
+        const loginUI = new NostrLoginUI(
+            document.getElementById('nostr-login-card'),
+            auth,
+            {
+                appName:       'Roady',
+                profileRelays: RELAYS,
+                allowGuestMode: true,
+
+                async onConnected(pubkey, profile, connectedEl) {
+                    overlay.style.display = 'none';
+                    window.Auth._cachedPubkey  = pubkey;
+                    window.Auth._cachedProfile = profile;
+                    if (!_sessionReady) {
+                        _sessionReady = true;
+                        let mycouchBaseUrl = '';
+                        try {
+                            const optDb = new Dexie('roady_options');
+                            optDb.version(1).stores({ kv: '&key' });
+                            const row = await optDb.kv.get('app_options');
+                            const saved = row?.value?.mycouchBaseUrl;
+                            // Migration: legacy default `db.argw.com` is gone;
+                            // empty string opts into same-origin via /__api__.
+                            if (saved && saved !== 'https://db.argw.com') mycouchBaseUrl = saved;
+                        } catch (_) {}
+                        window.Auth.setMycouchBaseUrl(mycouchBaseUrl);
+                        // No token to warm under MNA1 — each request signs fresh.
+                        window.dispatchEvent(new CustomEvent('nostr-connected', { detail: { pubkey, profile } }));
+                    } else {
+                        window.dispatchEvent(new CustomEvent('nostr-profile-updated', { detail: { pubkey, profile } }));
+                    }
+                },
+
+                onDisconnect() {
+                    overlay.style.display = 'flex';
+                    location.reload();
+                },
+                showHeader:    false,
+            }
+        );
+
+        loginUI.start();
+    </script>
 </body>
 
 </html>

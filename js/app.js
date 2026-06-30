@@ -22,7 +22,6 @@
         // Template editor (also reused for the gig instance editor)
         editingSetlist: null,        // the template/instance doc being edited
         editingSetlistKind: null,    // 'template' | 'instance'
-        setlistSongPicker: { sectionId: null, songId: '', newTitle: '' },
         // Gig set list
         gigSetlist: null,            // setlist instance for selectedGig (or null)
         setlistMode: 'view',         // 'view' | 'edit' for the gig set list panel
@@ -78,9 +77,12 @@
         nostrDisplayName: '',
         nostrNpub:        '',
         
-        // Retry state
+        // Retry state — exponential backoff so we don't hammer the remote
+        // nostr signer (every reconnect attempt signs an auth event).
         isRetrying: false,
-        retryInterval: null,
+        retryTimer: null,
+        retryAttempt: 0,
+        signerOffline: false,
 
         // UI state
         showAddEquipment: false,
@@ -344,9 +346,15 @@
 
             } catch (e) {
                 console.error('❌ Tenant initialization failed:', e);
-                console.warn('⚠️ Continuing in offline mode - MyCouch may be unavailable');
-                // Start background reconnection attempts
-                this.startBackgroundRetry();
+                if (this._isAuthDenied(e)) {
+                    // Permanent until the user grants signing access — don't
+                    // poll the signer (it just re-prompts / rate-limits).
+                    this.signerOffline = true;
+                    console.warn('🚫 Signer denied permission. Grant signing access in your signer app, then Reconnect.');
+                } else {
+                    console.warn('⚠️ Continuing in offline mode - MyCouch may be unavailable');
+                    this.startBackgroundRetry();
+                }
                 // Continue anyway with cached data - user can work offline
             }
 
@@ -413,32 +421,77 @@
                 : '';
         },
 
+        // Reconnect with exponential backoff. CRITICAL: every attempt calls
+        // initializeTenantContext → _fetchMyTenants → a SIGNED auth request,
+        // so fixed-interval polling hammers the remote signer (Amber /
+        // nsec.app) and gets us rate-limited. Back off hard, then give up
+        // after MAX_RETRIES and let the user reconnect manually.
         startBackgroundRetry() {
-            if (this.isRetrying || this.retryInterval) {
-                return; // Already retrying
-            }
-
+            if (this.isRetrying) return; // already scheduled
             this.isRetrying = true;
-            console.log('🔄 Starting background reconnection attempts every 5 seconds...');
+            this.signerOffline = false;
+            this.retryAttempt = 0;
+            this._scheduleRetry();
+        },
 
-            this.retryInterval = setInterval(async () => {
-                try {
-                    console.log('🔄 Attempting to reconnect...');
-                    const tenant = await window.tenantManager.initializeTenantContext();
-                    
-                    // Success — stop retrying
-                    console.log('✅ Reconnected! Tenant:', tenant.name);
-                    clearInterval(this.retryInterval);
-                    this.retryInterval = null;
-                    this.isRetrying = false;
-                    DB.setTenant(tenant._id);
-                    await this.loadBands();
-                    if (this.currentBandTenantId) DB.setTenant(this.currentBandTenantId);
-                    await this.loadData();
-                } catch (error) {
-                    console.log('⏳ Still waiting for MyCouch...');
+        _scheduleRetry() {
+            const MAX_RETRIES = 5;
+            const BASE_MS = 15000;   // 15s, doubling each attempt
+            const CAP_MS = 300000;   // 5 min ceiling
+            if (this.retryAttempt >= MAX_RETRIES) {
+                this.isRetrying = false;
+                this.signerOffline = true;
+                console.warn(`🚫 Signer unreachable after ${MAX_RETRIES} attempts. ` +
+                    `Auto-retry stopped to avoid rate limits — use Reconnect to try again.`);
+                return;
+            }
+            const delay = Math.min(BASE_MS * 2 ** this.retryAttempt, CAP_MS);
+            this.retryAttempt++;
+            console.log(`🔄 Reconnect attempt ${this.retryAttempt}/${MAX_RETRIES} in ${Math.round(delay / 1000)}s...`);
+            this.retryTimer = setTimeout(() => this._attemptReconnect(), delay);
+        },
+
+        async _attemptReconnect() {
+            try {
+                const tenant = await window.tenantManager.initializeTenantContext();
+                console.log('✅ Reconnected! Tenant:', tenant.name);
+                this._stopRetry();
+                this.signerOffline = false;
+                DB.setTenant(tenant._id);
+                await this.loadBands();
+                if (this.currentBandTenantId) DB.setTenant(this.currentBandTenantId);
+                await this.loadData();
+            } catch (error) {
+                console.log('⏳ Reconnect failed:', error.message);
+                if (this._isAuthDenied(error)) {
+                    this._stopRetry();
+                    this.signerOffline = true;
+                    console.warn('🚫 Signer denied permission. Grant signing access in your signer app, then Reconnect.');
+                    return;
                 }
-            }, 10000); // Try every 10 seconds
+                this._scheduleRetry();
+            }
+        },
+
+        // A signer/permission denial is permanent until the user acts — distinct
+        // from a transient network/relay failure that's worth retrying.
+        _isAuthDenied(err) {
+            const m = (err && err.message) ? err.message.toLowerCase() : '';
+            return /no permission|not authorized|unauthorized|forbidden|denied|rejected/.test(m);
+        },
+
+        _stopRetry() {
+            if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+            this.isRetrying = false;
+            this.retryAttempt = 0;
+        },
+
+        // Manual reconnect — resets backoff and tries again. Bind to a UI
+        // button shown while `signerOffline` is true.
+        reconnect() {
+            this._stopRetry();
+            this.signerOffline = false;
+            this.startBackgroundRetry();
         },
 
         async loadData() {
@@ -588,10 +641,9 @@
                         console.log('🔗 Same database scope, updating TenantManager:', this.options.mycouchBaseUrl);
                         window.tenantManager.mycouchBaseUrl = this.options.mycouchBaseUrl;
                         
-                        // Restart retry loop with new URL
-                        if (this.retryInterval) {
-                            clearInterval(this.retryInterval);
-                            this.startBackgroundRetry();
+                        // Restart retry loop with new URL (if one was active)
+                        if (this.isRetrying || this.signerOffline) {
+                            this.reconnect();
                         }
                     }
                 }
@@ -1471,6 +1523,329 @@
                 clearTimeout(this.snackbar.timeout);
             }
             this.snackbar.isOpen = false;
+        },
+
+        // ===============================================================
+        // Set list feature
+        // ===============================================================
+        newGigSetlistTemplateId: '',
+        _wakeLock: null,
+
+        // --- Duration helpers ---
+        formatDuration(sec) {            // mm:ss for a single song
+            sec = Number(sec) || 0;
+            const m = Math.floor(sec / 60);
+            const s = sec % 60;
+            return `${m}:${String(s).padStart(2, '0')}`;
+        },
+        parseDuration(str) {             // "h:mm:ss" | "mm:ss" | plain seconds
+            if (str == null) return 0;
+            str = String(str).trim();
+            if (!str) return 0;
+            if (str.includes(':')) {
+                const parts = str.split(':').map(p => parseInt(p, 10) || 0);
+                if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+                return parts[0] * 60 + parts[1];
+            }
+            return parseInt(str, 10) || 0;
+        },
+        formatRuntime(sec) {             // human total, e.g. "1h 23m"
+            sec = Number(sec) || 0;
+            if (!sec) return '—';
+            const h = Math.floor(sec / 3600);
+            const m = Math.round((sec % 3600) / 60);
+            return h > 0 ? `${h}h ${m}m` : `${m}m`;
+        },
+        sectionDuration(section) {
+            return (section?.items || []).reduce((sum, it) => sum + (Number(it.durationSec) || 0), 0);
+        },
+        setlistTotalDuration(setlist) {
+            return (setlist?.sections || []).reduce((sum, sec) => sum + this.sectionDuration(sec), 0);
+        },
+        setlistSongCount(setlist) {
+            return (setlist?.sections || []).reduce((sum, sec) => sum + (sec.items?.length || 0), 0);
+        },
+
+        // --- Songs (catalog) ---
+        async saveSong() {
+            if (!this.newSong.title.trim()) return;
+            const durationSec = this.parseDuration(this.songDurationInput);
+            if (this.editingSong) {
+                await DB.updateSong({
+                    ...this.editingSong,
+                    title: this.newSong.title.trim(),
+                    artist: this.newSong.artist || '',
+                    durationSec,
+                    key: this.newSong.key || '',
+                    bpm: Number(this.newSong.bpm) || 0,
+                    lead: this.newSong.lead || '',
+                    notes: this.newSong.notes || '',
+                });
+            } else {
+                await DB.addSong({ ...this.newSong, durationSec });
+            }
+            await this.loadData();
+            this.cancelSongEdit();
+        },
+        editSong(song) {
+            this.editingSong = song;
+            this.newSong = {
+                title: song.title || '',
+                artist: song.artist || '',
+                durationSec: song.durationSec || 0,
+                key: song.key || '',
+                bpm: song.bpm || 0,
+                lead: song.lead || '',
+                notes: song.notes || '',
+            };
+            this.songDurationInput = song.durationSec ? this.formatDuration(song.durationSec) : '';
+            this.showAddSong = true;
+        },
+        cancelSongEdit() {
+            this.showAddSong = false;
+            this.editingSong = null;
+            this.resetNewSong();
+        },
+        resetNewSong() {
+            this.newSong = { title: '', artist: '', durationSec: 0, key: '', bpm: 0, lead: '', notes: '' };
+            this.songDurationInput = '';
+        },
+        async deleteSong(id) {
+            const confirmed = await this.showConfirmation(
+                'Delete Song',
+                'Delete this song from the catalog? Existing set lists keep their copy.',
+                'Delete',
+                true
+            );
+            if (confirmed) {
+                const song = this.songs.find(s => s._id === id);
+                await DB.deleteSong(id);
+                await this.loadData();
+                this.cancelSongEdit();
+                this.showSnackbar(
+                    `Deleted "${song?.title || 'Song'}"`,
+                    async () => { await DB.restoreSong(id); await this.loadData(); }
+                );
+            }
+        },
+
+        // --- Set list templates ---
+        newSetlistTemplate() {
+            this.editingSetlist = { name: '', sections: [] };
+            this.editingSetlistKind = 'template';
+        },
+        editSetlistTemplate(tpl) {
+            this.editingSetlist = JSON.parse(JSON.stringify(tpl));
+            this.editingSetlistKind = 'template';
+        },
+        async duplicateSetlistTemplate(id) {
+            await DB.duplicateSetlistTemplate(id);
+            await this.loadData();
+            this.showSnackbar('Set list duplicated');
+        },
+        async deleteSetlistTemplate(id) {
+            const confirmed = await this.showConfirmation(
+                'Delete Set List Template',
+                'Delete this template? Gigs already using a copy are unaffected.',
+                'Delete',
+                true
+            );
+            if (confirmed) {
+                const tpl = this.setlistTemplates.find(t => t._id === id);
+                await DB.deleteSetlistTemplate(id);
+                await this.loadData();
+                this.closeSetlistEditor();
+                this.showSnackbar(
+                    `Deleted "${tpl?.name || 'Set list'}"`,
+                    async () => { await DB.restoreSetlistTemplate(id); await this.loadData(); }
+                );
+            }
+        },
+
+        // --- Shared set list editor (templates + gig instances) ---
+        closeSetlistEditor() {
+            this.editingSetlist = null;
+            this.editingSetlistKind = null;
+        },
+        async saveSetlistEditor() {
+            const doc = this.editingSetlist;
+            if (!doc) return;
+            if (this.editingSetlistKind === 'template') {
+                if (!(doc.name || '').trim()) {
+                    this.showSnackbar('Template name is required', 'error');
+                    return;
+                }
+                if (doc._id) await DB.updateSetlistTemplate(doc);
+                else await DB.addSetlistTemplate(doc);
+                await this.loadData();
+                this.closeSetlistEditor();
+            } else if (this.editingSetlistKind === 'instance') {
+                await DB.updateSetlist(doc);
+                await this.loadData();
+                this.gigSetlist = await DB.getSetlistForGig(doc.gigId);
+                this.setlistMode = 'view';
+                this.closeSetlistEditor();
+            }
+        },
+        addSetlistSection() {
+            if (!this.editingSetlist) return;
+            if (!this.editingSetlist.sections) this.editingSetlist.sections = [];
+            const n = this.editingSetlist.sections.length + 1;
+            this.editingSetlist.sections.push({ id: 'sec_' + Date.now(), name: `Set ${n}`, items: [] });
+        },
+        deleteSetlistSection(sectionId) {
+            if (!this.editingSetlist) return;
+            this.editingSetlist.sections = this.editingSetlist.sections.filter(s => s.id !== sectionId);
+        },
+        moveSetlistSection(index, dir) {
+            const arr = this.editingSetlist?.sections;
+            if (!arr) return;
+            const j = index + dir;
+            if (j < 0 || j >= arr.length) return;
+            [arr[index], arr[j]] = [arr[j], arr[index]];
+        },
+        async addSongToSection(sectionId, songId, newTitle) {
+            const section = this.editingSetlist?.sections.find(s => s.id === sectionId);
+            if (!section) return false;
+            let id = songId;
+            let title = '';
+            let durationSec = 0;
+            if (!id && (newTitle || '').trim()) {
+                const res = await DB.addSong({ title: newTitle.trim() });
+                id = res.id;
+                title = newTitle.trim();
+                await this.loadData();
+            } else if (id) {
+                const song = this.songs.find(s => s._id === id);
+                if (!song) return false;
+                title = song.title;
+                durationSec = Number(song.durationSec) || 0;
+            } else {
+                return false;
+            }
+            section.items.push({ songId: id, title, durationSec });
+            return true;
+        },
+        removeSongFromSection(sectionId, index) {
+            const section = this.editingSetlist?.sections.find(s => s.id === sectionId);
+            if (section) section.items.splice(index, 1);
+        },
+        moveSongInSection(sectionId, index, dir) {
+            const section = this.editingSetlist?.sections.find(s => s.id === sectionId);
+            if (!section) return;
+            const arr = section.items;
+            const j = index + dir;
+            if (j < 0 || j >= arr.length) return;
+            [arr[index], arr[j]] = [arr[j], arr[index]];
+        },
+
+        // --- Gig integration ---
+        async openGigSetlist(gigId) {
+            this.selectedGigId = gigId;
+            this.selectedGig = await DB.getGig(gigId);
+            this.gigSetlist = await DB.getSetlistForGig(gigId);
+            this.setlistMode = 'view';
+            this.newGigSetlistTemplateId = '';
+            this.showGigSetlist = true;
+        },
+        closeGigSetlist() {
+            this.showGigSetlist = false;
+            this.gigSetlist = null;
+            this.setlistMode = 'view';
+            this.selectedGigId = null;
+            this.selectedGig = null;
+            this.newGigSetlistTemplateId = '';
+            this.closeSetlistEditor();
+        },
+        async pickTemplateForGig() {
+            if (!this.newGigSetlistTemplateId) return;
+            await DB.addSetlistFromTemplate(this.selectedGigId, this.newGigSetlistTemplateId);
+            await this.loadData();
+            this.gigSetlist = await DB.getSetlistForGig(this.selectedGigId);
+            this.newGigSetlistTemplateId = '';
+            this.setlistMode = 'view';
+        },
+        async startBlankSetlistForGig() {
+            await DB.addBlankSetlist(this.selectedGigId, this.selectedGig?.name);
+            await this.loadData();
+            this.gigSetlist = await DB.getSetlistForGig(this.selectedGigId);
+            this.setlistMode = 'view';
+            this.editGigSetlist();
+        },
+        editGigSetlist() {
+            if (!this.gigSetlist) return;
+            this.editingSetlist = JSON.parse(JSON.stringify(this.gigSetlist));
+            this.editingSetlistKind = 'instance';
+            this.setlistMode = 'edit';
+        },
+        async removeGigSetlist() {
+            if (!this.gigSetlist) return;
+            const confirmed = await this.showConfirmation(
+                'Remove Set List',
+                'Remove the set list from this gig? You can undo right after.',
+                'Remove',
+                true
+            );
+            if (!confirmed) return;
+            const id = this.gigSetlist._id;
+            const gigId = this.selectedGigId;
+            await DB.deleteSetlist(id);
+            await this.loadData();
+            this.gigSetlist = null;
+            this.showSnackbar(
+                'Set list removed',
+                async () => {
+                    await DB.restoreSetlist(id);
+                    await this.loadData();
+                    this.gigSetlist = await DB.getSetlistForGig(gigId);
+                }
+            );
+        },
+        async saveSetlistAsTemplate() {
+            const src = this.editingSetlist || this.gigSetlist;
+            if (!src) return;
+            const name = (src.name || this.selectedGig?.name || 'Set List').trim();
+            await DB.addSetlistTemplate({ name, sections: src.sections });
+            await this.loadData();
+            this.showSnackbar(`Saved as template "${name}"`);
+        },
+        async updateSourceTemplate() {
+            const src = this.editingSetlist || this.gigSetlist;
+            if (!src || !src.sourceTemplateId) return;
+            const confirmed = await this.showConfirmation(
+                'Update Source Template',
+                'Overwrite the source template with this set list? This affects future gigs created from the template.',
+                'Update Template',
+                true
+            );
+            if (!confirmed) return;
+            const tpl = this.setlistTemplates.find(t => t._id === src.sourceTemplateId);
+            if (!tpl) {
+                this.showSnackbar('Source template no longer exists', 'error');
+                return;
+            }
+            await DB.updateSetlistTemplate({ ...tpl, sections: src.sections });
+            await this.loadData();
+            this.showSnackbar('Source template updated');
+        },
+
+        // --- Performance (live) view + print ---
+        async openPerformanceView(setlist) {
+            this.performanceSetlist = setlist;
+            if ('wakeLock' in navigator) {
+                try { this._wakeLock = await navigator.wakeLock.request('screen'); } catch (_) { /* best effort */ }
+            }
+        },
+        async closePerformanceView() {
+            this.performanceSetlist = null;
+            if (this._wakeLock) {
+                try { await this._wakeLock.release(); } catch (_) { /* ignore */ }
+                this._wakeLock = null;
+            }
+        },
+        printSetlist(setlist) {
+            this.performanceSetlist = setlist;
+            this.$nextTick(() => window.print());
         },
 
         // Band management methods
