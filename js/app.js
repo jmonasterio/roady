@@ -11,6 +11,24 @@
         selectedGig: null,
         gigChecklistMode: null, // 'leavingForGig' or 'leavingFromGig'
 
+        // Set list feature state
+        setlistTab: 'songs', // 'songs' or 'templates'
+        songs: [],
+        setlistTemplates: [],
+        showAddSong: false,
+        editingSong: null,
+        newSong: { title: '', artist: '', durationSec: 0, key: '', bpm: 0, lead: '', notes: '' },
+        songDurationInput: '', // mm:ss text bound in the form
+        // Template editor (also reused for the gig instance editor)
+        editingSetlist: null,        // the template/instance doc being edited
+        editingSetlistKind: null,    // 'template' | 'instance'
+        setlistSongPicker: { sectionId: null, songId: '', newTitle: '' },
+        // Gig set list
+        gigSetlist: null,            // setlist instance for selectedGig (or null)
+        setlistMode: 'view',         // 'view' | 'edit' for the gig set list panel
+        showGigSetlist: false,       // gig set list dialog open
+        performanceSetlist: null,    // setlist doc rendered full-screen, or null
+
         // Deleted items state
         deletedItems: {
             gigs: [],
@@ -37,6 +55,10 @@
         bandBeingEdited: { name: '' },
         bandNameOriginal: '',
         currentBandMembers: [],
+        bandMembers: [],
+        showAddBandMember: false,
+        newBandMember: { name: '', role: '' },
+        editingBandMember: null,
         isCreatingBand: false,  // Prevent double submission
         
         // Invitation state (Members tab)
@@ -52,6 +74,9 @@
 
         // Authentication state
         isAuthenticated: false,
+        nostrAvatarHtml:  '',
+        nostrDisplayName: '',
+        nostrNpub:        '',
         
         // Retry state
         isRetrying: false,
@@ -95,12 +120,12 @@
             addedEquipmentName: ''
         },
         options: {
-            mycouchBaseUrl: 'https://db.argw.com',
+            mycouchBaseUrl: '',
             tenantId: ''
         },
         currentDbName: '',
-        currentJwtToken: '',
-        jwtCopied: false,
+        currentSessionToken: '',
+        sessionCopied: false,
         syncStatus: 'idle',
         syncError: null,
         syncRetryCount: 0,
@@ -143,7 +168,7 @@
         },
 
         // Parse invite_token from URL and store in sessionStorage
-        // This runs BEFORE Clerk auth, so token survives the redirect
+        // This runs BEFORE nostr auth, so token survives any redirects
         parseInviteTokenFromUrl() {
             const urlParams = new URLSearchParams(window.location.search);
             const inviteToken = urlParams.get('invite_token');
@@ -166,66 +191,49 @@
         async acceptPendingInvitation(token) {
             try {
                 console.log('📬 Accepting pending invitation...');
-                const authToken = await Clerk.session?.getToken();
-                if (!authToken) {
-                    console.warn('⚠️ No auth token available for accepting invitation');
+                if (!window.Auth?.isAuthenticated()) {
+                    console.warn('⚠️ Not authenticated; cannot accept invitation');
                     return false;
                 }
 
                 // Normalize URL: remove trailing slash to avoid double slashes
                 const baseUrl = this.options.mycouchBaseUrl.replace(/\/$/, '');
-                const response = await fetch(`${baseUrl}/api/invitations/accept`, {
-                    method: 'PATCH',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${authToken}`
+                const response = await window.Auth.fetchWithAuth(
+                    `${baseUrl}/api/invitations/accept`,
+                    {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ token }),
                     },
-                    body: JSON.stringify({ inviteToken: token })
-                });
+                );
 
                 if (response.ok) {
                     const result = await response.json();
                     console.log('✅ Invitation accepted:', result);
-                    
+
                     // Clear the token from sessionStorage
                     sessionStorage.removeItem('pendingInviteToken');
-                    
-                    // Server returned the complete accepted tenant document
-                    // Use it immediately to populate local state and PouchDB
-                    console.log('✅ Invitation accepted, received complete tenant from server:', result);
-                    
-                    // Save the accepted tenant to local PouchDB immediately
-                    // This makes it available without waiting for sync
-                    if (window.tenantManager?.tenantsDb && result._id) {
-                        try {
-                            await window.tenantManager.tenantsDb.put(result);
-                            console.log('✅ Saved accepted tenant to local PouchDB:', result._id);
-                        } catch (e) {
-                            if (e.status === 409) {
-                                // Conflict - document already exists, try to update
-                                const existing = await window.tenantManager.tenantsDb.get(result._id);
-                                result._rev = existing._rev;
-                                await window.tenantManager.tenantsDb.put(result);
-                                console.log('✅ Updated existing tenant in local PouchDB:', result._id);
-                            } else {
-                                console.warn('⚠️ Could not save tenant to local PouchDB:', e.message);
-                            }
-                        }
-                    }
-                    
+
+                    // Adopt the accepted tenant into the TenantManager's
+                    // in-memory list. No local Pouch write needed under MNA1 —
+                    // the next /api/my-tenants pull confirms it server-side.
+                    const accepted = await window.tenantManager?.addOrUpdateTenant(result);
+                    const tenantId = accepted?._id || result._id || result.tenant_id;
+
                     // Update local band list
-                    if (!this.userBands.find(b => b._id === result._id)) {
-                        this.userBands.push(result);
-                        console.log('✅ Added accepted tenant to userBands:', result._id);
+                    if (tenantId && !this.userBands.find(b => b._id === tenantId)) {
+                        this.userBands.push(accepted || result);
+                        console.log('✅ Added accepted tenant to userBands:', tenantId);
                     }
                     
                     // Switch to the new band
-                    if (result.tenantId) {
-                        this.currentBandTenantId = result.tenantId;
-                        DB.setTenant(result.tenantId);
+                    // Use _id ("tenant_<uuid>") to match the format documents are stored under.
+                    if (tenantId) {
+                        this.currentBandTenantId = tenantId;
+                        DB.setTenant(tenantId);
                         await this.loadBandDetails();
                         await this.loadData();
-                        console.log('✅ Switched to joined band:', result.tenantId);
+                        console.log('✅ Switched to joined band:', tenantId);
                     }
                     
                     this.showSnackbar('Successfully joined the band!');
@@ -269,83 +277,58 @@
         async init() {
             console.log('🚀 Roady App Initializing...');
             
-            // CRITICAL: Parse invite token BEFORE Clerk init
-            // This ensures token survives Clerk's redirect
+            // CRITICAL: Parse invite token from URL before auth
             this.parseInviteTokenFromUrl();
             
             this.isLoading = true;
 
-            // 1. Wait for Clerk to load
-            if (!window.Clerk) {
-                console.log('⏳ Waiting for Clerk...');
-                // Simple retry mechanism
-                let retries = 0;
-                while (!window.Clerk && retries < 20) {
-                    await new Promise(r => setTimeout(r, 100));
-                    retries++;
-                }
-            }
+            // 1. Wait for Nostr auth — suspend until the login overlay fires nostr-connected
+            console.log('⏳ Waiting for Nostr auth...');
+            // Update nav profile when background fetch completes
+            window.addEventListener('nostr-profile-updated', (e) => {
+                this._updateNavProfile(e.detail?.pubkey, e.detail?.profile);
+            });
+            await new Promise(resolve => {
+                if (window.Auth.isAuthenticated()) { resolve(); return; }
+                const handler = () => {
+                    window.removeEventListener('nostr-connected', handler);
+                    resolve();
+                };
+                window.addEventListener('nostr-connected', handler);
+            });
 
-            if (window.Clerk) {
-                // On localhost, don't append /roady to redirect URLs (Clerk doesn't need it)
-                const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-                const redirectPath = isLocalhost ? '' : '/roady';
-                const baseUrl = window.location.origin + redirectPath;
-                
-                await Clerk.load({
-                    afterSignInUrl: baseUrl,
-                    afterSignUpUrl: baseUrl,
-                    afterSignOutUrl: baseUrl
-                });
-            } else {
-                console.error('❌ Clerk failed to load');
-                return;
-            }
-
-            // 2. Check Authentication
-            if (!Clerk.isSignedIn) {
-                console.log('👤 User not signed in - showing sign-in');
-                this.isAuthenticated = false;
-                this.isLoading = false;
-                // Mount sign-in UI
-                const mainContent = document.querySelector('main.container');
-                if (mainContent) {
-                    mainContent.innerHTML = '<div id="sign-in-container" style="display: flex; justify-content: center; margin-top: 2rem;"></div>';
-                    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-                    const redirectPath = isLocalhost ? '' : '/roady';
-                    Clerk.mountSignIn(document.getElementById('sign-in-container'), {
-                        redirectUrl: window.location.origin + redirectPath
-                    });
-                }
-                return;
-            }
+            // Populate nav with profile data already cached by onConnected
+            this._updateNavProfile(window.Auth._cachedPubkey || window.Auth.getPubkey(), window.Auth._cachedProfile);
 
             // User is authenticated
             this.isAuthenticated = true;
-
-            console.log('👤 User signed in:', Clerk.user.primaryEmailAddress?.emailAddress);
+            const pubkey = window.Auth.getPubkey();
+            console.log('👤 Nostr user connected:', pubkey?.slice(0, 16) + '...');
 
             // 3. Load Options first (before tenant init, so we have mycouchBaseUrl)
             await this.loadOptions();
             
-            // Set remote identity for scoped PouchDB naming
-            const username = Clerk.user.username || Clerk.user.primaryEmailAddress?.emailAddress?.split('@')[0] || 'user';
-            DB.setRemoteIdentity(this.options.mycouchBaseUrl, username);
-            
+            // Resolve the MyCouch base BEFORE anything scopes off it. Auth
+            // turns '' / '/__api__' / 'host.tld' into a usable absolute base;
+            // passing the raw '' downstream silently un-scopes the local DB.
+            window.Auth.setMycouchBaseUrl(this.options.mycouchBaseUrl);
+            const resolvedMycouchUrl = window.Auth.getMycouchBaseUrl();
+
+            // Set remote identity for scoped local-DB naming.
+            // Use pubkey prefix as stable username for DB scoping.
+            const username = pubkey ? pubkey.slice(0, 16) : 'user';
+            DB.setRemoteIdentity(resolvedMycouchUrl, username);
+
             // Initialize DB with scoped naming
             DB.init();
-            
+
             // Set current database name for display
-            this.currentDbName = `pouchdb-local-${DB.hashRemoteUrl(this.options.mycouchBaseUrl)}-${username}`;
-
-            // Load JWT token for display in settings
-            await this.loadJwtToken();
-
+            this.currentDbName = `pouchdb-local-${DB.hashRemoteUrl(resolvedMycouchUrl)}-${username}`;
             // 4. Initialize Tenant Context with loaded options
             try {
                 console.log('🏢 Initializing Tenant Context...');
-                console.log('🔗 Passing mycouchBaseUrl to TenantManager:', this.options.mycouchBaseUrl);
-                const tenantManager = new TenantManager(this.options.mycouchBaseUrl);
+                console.log('🔗 Passing mycouchBaseUrl to TenantManager:', resolvedMycouchUrl);
+                const tenantManager = new TenantManager(resolvedMycouchUrl);
                 window.tenantManager = tenantManager;
                 console.log('✅ TenantManager created with URL:', tenantManager.mycouchBaseUrl);
 
@@ -353,7 +336,7 @@
                 this.options.tenantId = tenant.tenantId;
 
                 // Set tenant in DB layer
-                DB.setTenant(tenant.tenantId);
+                DB.setTenant(tenant._id);
 
                 console.log('✅ Tenant Initialized:', tenant.name);
 
@@ -386,56 +369,48 @@
                 }
             }
 
+            // Sync DB tenant to whichever band loadBands() selected.
+            // Without this, getAllGigs/getAllEquipment filter by the wrong tenant.
+            if (this.currentBandTenantId) {
+                DB.setTenant(this.currentBandTenantId);
+            }
+
             // Load current band details
             await this.loadBandDetails();
 
-            // Initialize PouchDB first
-            await this.loadData();
-            
-            // CRITICAL: Accept pending invitation if one exists
-            // This must happen AFTER Clerk auth, tenant init, and options loading
-            const pendingToken = this.checkPendingInvitation();
-            if (pendingToken) {
-                console.log('📬 Processing pending invitation acceptance...');
-                await this.acceptPendingInvitation(pendingToken);
-            }
-            
-            this.isLoading = false;
-
-            // Note: Active tenant is now managed via session documents (per-device)
-            // No need to sync to server or refresh JWT - session service handles it
-
-            // 5. Setup Sync (uses mycouchBaseUrl, not couchDbUrl)
+            // 5. Setup Sync before first render so the listener is attached
+            //    before any change event can fire, and sync has a head start.
             this.setupSyncListeners();
             if (this.options.mycouchBaseUrl) {
                 this.enableSync();
             }
 
-            // 6. Mount User Button
-            this.mountUserButton();
+            // Initial render from local PouchDB (may be empty on new browser;
+            // db-sync-change will reload once remote data arrives).
+            await this.loadData();
+            
+            // CRITICAL: Accept pending invitation if one exists
+            // This must happen AFTER nostr auth, tenant init, and options loading
+            const pendingToken = this.checkPendingInvitation();
+            if (pendingToken) {
+                console.log('📣 Processing pending invitation acceptance...');
+                await this.acceptPendingInvitation(pendingToken);
+            }
+            
+            this.isLoading = false;
+
         },
 
-        mountUserButton() {
-            const navBar = document.querySelector('nav.container-fluid');
-            if (!navBar) return;
-
-            let container = document.getElementById('user-button-container');
-            if (!container) {
-                container = document.createElement('div');
-                container.id = 'user-button-container';
-                container.style.display = 'inline-block';
-
-                const navLists = navBar.querySelectorAll('ul');
-                if (navLists.length > 1) {
-                    const li = document.createElement('li');
-                    li.appendChild(container);
-                    navLists[1].appendChild(li);
-                }
-            }
-
-            if (!container.hasChildNodes()) {
-                Clerk.mountUserButton(container);
-            }
+        _updateNavProfile(pubkey, profile) {
+            if (!pubkey) return;
+            const npub = window.encodeNpub ? window.encodeNpub(pubkey) : pubkey;
+            this.nostrNpub        = npub;
+            this.nostrDisplayName = window.nuiDisplayName
+                ? window.nuiDisplayName(profile, npub)
+                : npub.slice(0, 20) + '\u2026';
+            this.nostrAvatarHtml  = window.nuiAvatarHtml
+                ? window.nuiAvatarHtml(profile, pubkey, 28)
+                : '';
         },
 
         startBackgroundRetry() {
@@ -451,14 +426,15 @@
                     console.log('🔄 Attempting to reconnect...');
                     const tenant = await window.tenantManager.initializeTenantContext();
                     
-                    // Success! Stop retrying
+                    // Success — stop retrying
                     console.log('✅ Reconnected! Tenant:', tenant.name);
                     clearInterval(this.retryInterval);
                     this.retryInterval = null;
                     this.isRetrying = false;
-                    
-                    // Reload bands
+                    DB.setTenant(tenant._id);
                     await this.loadBands();
+                    if (this.currentBandTenantId) DB.setTenant(this.currentBandTenantId);
+                    await this.loadData();
                 } catch (error) {
                     console.log('⏳ Still waiting for MyCouch...');
                 }
@@ -469,6 +445,9 @@
             this.equipment = await DB.getAllEquipment();
             this.gigTypes = await DB.getAllGigTypes();
             this.gigs = await DB.getAllGigs();
+            this.bandMembers = await DB.getAllBandMembers();
+            this.songs = await DB.getAllSongs();
+            this.setlistTemplates = await DB.getAllSetlistTemplates();
         },
 
         async loadDeletedItems() {
@@ -519,10 +498,10 @@
                     delete this.options.couchDbUrl;
                 }
 
-                // Set defaults if missing
-                if (!this.options.mycouchBaseUrl) {
-                    console.log('🔧 Setting default MyCouch URL');
-                    this.options.mycouchBaseUrl = 'https://db.argw.com';
+                // Migrate legacy default → same-origin (empty)
+                if (this.options.mycouchBaseUrl === 'https://db.argw.com') {
+                    console.log('🔧 Migrating legacy default MyCouch URL → same-origin /__api__');
+                    this.options.mycouchBaseUrl = '';
                 }
                 
                 console.log('📦 Final options:', {
@@ -553,7 +532,7 @@
                     console.log('🔗 MyCouch URL changed, switching to scoped database...');
                     
                     // Check if database needs to switch (URL + username combination changed)
-                    const username = Clerk.user.username || Clerk.user.primaryEmailAddress?.emailAddress?.split('@')[0] || 'user';
+                    const username = window.Auth.getPubkey()?.slice(0, 16) || 'user';
                     const newUrlHash = DB.hashRemoteUrl(this.options.mycouchBaseUrl);
                     const oldUrlHash = DB.hashRemoteUrl(oldUrl);
                     
@@ -589,7 +568,7 @@
                         try {
                             const tenant = await window.tenantManager.initializeTenantContext();
                             this.options.tenantId = tenant.tenantId;
-                            DB.setTenant(tenant.tenantId);
+                            DB.setTenant(tenant._id);
                             console.log('✅ Switched to new database and tenant context:', tenant.name);
                             await this.loadBands();
                             await this.loadData();
@@ -626,33 +605,24 @@
             }
         },
 
-        async loadJwtToken() {
-            try {
-                // Request token - use standard Clerk session token
-                const token = await window.Clerk?.session?.getToken?.();
-                if (token) {
-                    this.currentJwtToken = token;
-                    console.log('✅ JWT token loaded for settings display');
-                } else {
-                    console.warn('⚠️ Could not get JWT token from Clerk');
-                    this.currentJwtToken = '(No token available)';
-                }
-            } catch (e) {
-                console.error('Failed to load JWT token:', e);
-                this.currentJwtToken = '(Error loading token)';
-            }
+        async loadSessionToken() {
+            // MNA1 has no session token — each request is signed fresh.
+            // The diagnostics field now surfaces the active nostr pubkey
+            // so users still have a stable identifier to copy.
+            const pubkey = window.Auth?.getPubkey();
+            this.currentSessionToken = pubkey || '(Not signed in)';
         },
 
-        async copyJwtToken() {
+        async copySessionToken() {
             try {
-                await navigator.clipboard.writeText(this.currentJwtToken);
-                this.jwtCopied = true;
+                await navigator.clipboard.writeText(this.currentSessionToken);
+                this.sessionCopied = true;
                 setTimeout(() => {
-                    this.jwtCopied = false;
+                    this.sessionCopied = false;
                 }, 2000);
-                console.log('✅ JWT token copied to clipboard');
+                console.log('✅ Session token copied to clipboard');
             } catch (e) {
-                console.error('Failed to copy JWT token:', e);
+                console.error('Failed to copy session token:', e);
                 alert('Failed to copy token to clipboard');
             }
         },
@@ -677,7 +647,7 @@
             // Construct sync URL from MyCouch proxy base URL
             // Determine database name based on environment
             const dbName = window.location.hostname === 'localhost' ? 'roady-staging' : 'roady';
-            const syncUrl = `${this.options.mycouchBaseUrl}/${dbName}`;
+            const syncUrl = `${window.Auth.getMycouchBaseUrl()}/${dbName}`;
             console.log('📡 Calling Sync.setupSync with:', syncUrl);
             
             // Non-blocking sync setup with automatic retry
@@ -704,12 +674,20 @@
         },
 
         scheduleRetrySync(syncUrl) {
+            // Stop immediately if auth has permanently failed (repeated 401s from /auth/session)
+            if (window.Auth?.isAuthPermanentlyFailed?.()) {
+                console.error('[⛔ Sync] Auth permanently failed — backend does not accept Nostr auth. Sync disabled.');
+                this.syncError = 'Sync unavailable: server auth rejected. Check backend /auth/session configuration.';
+                this.syncRetryCount = 0;
+                return;
+            }
+
             // Exponential backoff: 5s, 10s, 20s, 30s, 30s...
-            const baseDelay = 5000; // 5 seconds
-            const maxDelay = 30000; // 30 seconds
+            const baseDelay = 5000;
+            const maxDelay = 30000;
             const retryCount = this.syncRetryCount || 0;
             const delay = Math.min(baseDelay * Math.pow(2, retryCount), maxDelay);
-            
+
             console.log(`📡 Scheduling sync retry in ${delay}ms (attempt ${retryCount + 1})`);
             setTimeout(() => {
                 this.syncRetryCount = (this.syncRetryCount || 0) + 1;
@@ -718,14 +696,14 @@
                         if (success) {
                             console.log('✅ Sync reconnected!');
                             this.syncError = null;
-                            this.syncRetryCount = 0; // Reset on success
+                            this.syncRetryCount = 0;
                         } else {
-                            this.scheduleRetrySync(syncUrl); // Retry again
+                            this.scheduleRetrySync(syncUrl);
                         }
                     })
                     .catch(error => {
                         console.warn('⚠️ Sync retry failed:', error.message);
-                        this.scheduleRetrySync(syncUrl); // Retry again
+                        this.scheduleRetrySync(syncUrl);
                     });
             }, delay);
         },
@@ -743,9 +721,13 @@
         setupSyncListeners() {
             window.addEventListener('db-sync-change', (e) => {
                 this.syncStatus = window.Sync ? Sync.getSyncStatus() : 'idle';
-                // Reload data when sync receives changes
-                this.loadData();
-                this.loadDeletedItems();
+                // Reload bands first — they may have just synced in for the first time.
+                // Then re-sync DB tenant in case the selection changed, then reload data.
+                this.loadBands().then(() => {
+                    if (this.currentBandTenantId) DB.setTenant(this.currentBandTenantId);
+                    this.loadData();
+                    this.loadDeletedItems();
+                });
             });
 
             window.addEventListener('db-sync-error', (e) => {
@@ -1624,128 +1606,56 @@
             this.isCreatingBand = true;
 
             try {
-                const token = await Clerk.session?.getToken();
-                if (!token) {
-                    console.error('No auth token available');
+                if (!window.Auth?.isAuthenticated()) {
+                    console.error('Not authenticated');
                     this.showSnackbar('Authentication error: Please sign in again', 'error');
                     this.isCreatingBand = false;
                     return;
                 }
-                
+
                 const bandName = this.newBandName;
-                
-                // CRITICAL: Create tenant via /api/tenants BACKEND endpoint (NOT virtual table)
-                // Virtual table would create orphaned tenant without applicationId
-                // Backend API ensures proper registration in couch-sitter for cascade deletion
+
+                // Create tenant via the TenantManager — under the hood this
+                // POSTs `/api/tenants` with MNA1 auth and normalizes the
+                // server's `Tenant` response into the legacy `_id` shape.
                 try {
-                    console.log('📤 Creating band via /api/tenants backend endpoint:', bandName);
-                    const baseUrl = this.options.mycouchBaseUrl.replace(/\/$/, ''); // Remove trailing slash if present
-                    const response = await fetch(`${baseUrl}/api/tenants`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${token}`
-                        },
-                        body: JSON.stringify({ name: bandName })
-                    });
+                    console.log('📤 Creating band via TenantManager.createTenant:', bandName);
+                    const newTenant = await window.tenantManager.createTenant({ name: bandName });
+                    const newBandId = newTenant.tenantId; // bare uuid for sub-systems that expect it
+                    const internalId = newTenant._id;     // `tenant_<...>` for DAL + active-tenant
+                    console.log('✅ Band created:', newTenant);
 
-                    if (!response.ok) {
-                        const error = await response.json();
-                        throw new Error(error.detail || 'Failed to create band');
-                    }
-
-                    const tenantResponse = await response.json();
-                    // Backend returns _id in internal format (tenant_uuid), extract virtual ID
-                    let newBandId = tenantResponse._id;
-                    if (newBandId.startsWith('tenant_')) {
-                        newBandId = newBandId.substring(7); // Strip "tenant_" prefix to get virtual ID
-                    }
-                    console.log('✅ Band created via /api/tenants with applicationId:', tenantResponse, 'Virtual ID:', newBandId);
-                    
                     this.showCreateBandDialog = false;
                     this.newBandName = '';
-                    
-                    // Create band-info document in the new tenant's roady database
+
+                    // Create band-info document in the new tenant's roady DB.
                     try {
-                        const currentTenant = DB.tenant;
-                        console.log('📝 Setting tenant to new band:', newBandId);
-                        DB.setTenant(newBandId);
-                        console.log('📝 Saving band-info for:', newBandId, 'with name:', bandName);
-                        const result = await DB.saveBandInfo({ name: bandName });
-                        console.log('✅ Created band-info document for:', newBandId, 'Result:', result);
-                        if (currentTenant) {
-                            DB.setTenant(currentTenant);
-                        }
+                        const previousTenant = DB.currentTenant;
+                        console.log('📝 Setting tenant to new band:', internalId);
+                        DB.setTenant(internalId);
+                        console.log('📝 Saving band-info for:', internalId);
+                        await DB.saveBandInfo({ name: bandName });
+                        if (previousTenant) DB.setTenant(previousTenant);
                     } catch (e) {
-                        console.error('❌ Failed to create band-info for', newBandId);
-                        console.error('   Error:', e.message || e);
-                        console.error('   Full error:', e);
+                        console.error('❌ Failed to create band-info for', internalId, e);
                     }
-                    
-                    // Get current user ID to include in userIds list
-                    let currentUserId = null;
+
+                    // Add to local app state. TenantManager.createTenant already
+                    // pushed into its own tenantList; userBands mirrors that for UI.
+                    if (!this.userBands.find(b => b._id === internalId)) {
+                        this.userBands.push(newTenant);
+                    }
+                    console.log('✅ Added new band to local lists:', internalId);
+
+                    // Refresh from server to pick up server-side normalization
+                    // (e.g. membership rows) before switching.
                     try {
-                        const user = await Clerk.user;
-                        if (user?.id) {
-                            currentUserId = user.id;
-                        }
+                        const fresh = await window.tenantManager.getMyTenants();
+                        if (Array.isArray(fresh) && fresh.length > 0) this.userBands = fresh;
                     } catch (e) {
-                        console.warn('Could not get user ID from Clerk');
+                        console.warn('⚠️ Tenant refresh after create failed:', e.message);
                     }
-                    
-                    // Construct tenant doc for local PouchDB (must match server format)
-                    const newTenant = {
-                        _id: `tenant_${newBandId}`,  // Internal format for local storage
-                        type: 'tenant',
-                        tenantId: newBandId,  // Virtual ID
-                        name: bandName,
-                        role: 'owner',
-                        memberCount: 1,
-                        userIds: currentUserId ? [currentUserId] : [],  // Member list
-                        createdAt: new Date().toISOString(),
-                        syncedAt: new Date().toISOString()
-                    };
-                    
-                    // Save to local PouchDB so it syncs back to server
-                    if (window.tenantManager?.tenantsDb) {
-                        try {
-                            await window.tenantManager.tenantsDb.put(newTenant);
-                            console.log('✅ Saved new tenant to local PouchDB:', newTenant);
-                        } catch (e) {
-                            console.warn('⚠️ Failed to save to local PouchDB:', e);
-                            // Continue anyway - band was created on server
-                        }
-                    }
-                    
-                    // Add new band to local app state
-                    this.userBands.push(newTenant);
-                    
-                    // Also add to tenantManager's tenantList
-                    if (window.tenantManager) {
-                        window.tenantManager.tenantList.push(newTenant);
-                    }
-                    console.log('✅ Added new band to local lists:', newTenant);
-                    
-                    // Reload user document from server to get fresh tenants array with userIds
-                    // This ensures band members can be loaded immediately after creation
-                    console.log('🔄 Fetching fresh user document from server to sync tenants array...');
-                    try {
-                        const freshTenants = await window.tenantManager?.getMyTenantsFromServer?.();
-                         if (freshTenants && freshTenants.length > 0) {
-                             console.log('✅ Loaded fresh tenants with userIds from server:', freshTenants);
-                             this.userBands = freshTenants;
-                             // ⚠️ DO NOT UPDATE POUCHDB HERE - See INVITATION_ACCEPTANCE_CODE_REVIEW.md
-                             // The server's GET /__tenants returns full tenant documents with _id, type, etc.
-                             // But user.tenants should have format: {tenantId, role, personal, joinedAt, userIds}
-                             // Assigning full tenant docs to user.tenants corrupts the data.
-                             // Let PouchDB's normal sync process update the local user document correctly.
-                             console.log('✅ User tenants already synced via backend during band creation');
-                             console.log('   Do not overwrite user.tenants with full tenant documents');
-                         }
-                    } catch (e) {
-                        console.warn('⚠️ Failed to reload tenants after band creation:', e);
-                        // Continue anyway - band was created, PouchDB will sync eventually
-                    }
+
                     
                     // Switch to new band (becomes active in JWT)
                     await this.switchBand(newBandId);
@@ -1805,34 +1715,41 @@
         },
 
         async loadBandMembers() {
-            // Members are in userIds array in the tenant document
-            console.log('🔍 loadBandMembers: currentBandTenantId =', this.currentBandTenantId);
-            console.log('🔍 userBands available:', this.userBands.map(b => ({ _id: b._id, tenantId: b.tenantId, name: b.name })));
+            // Members live in the `tenant_members` server table (B.6a). The
+            // old `tenantDoc.userIds` array was a virtual-tables-era affordance
+            // (B.7) that the post-C.11 server-shape tenants don't carry. Fetch
+            // authoritative state from `GET /api/tenants/:tid/members` so a
+            // freshly-created tenant or one whose membership changed remotely
+            // displays correctly without a round-trip through `/api/my-tenants`.
+            this.currentBandMembers = [];
+            if (!this.currentBandTenantId) return;
 
-            // Strip "tenant_" prefix from currentBandTenantId for comparison
-            const virtualTenantId = this.currentBandTenantId.replace('tenant_', '');
-            console.log('🔍 Virtual tenant ID:', virtualTenantId);
-
-            // Find by either _id or tenantId
-            const tenantDoc = this.userBands.find(b =>
-                b._id === virtualTenantId || b.tenantId === virtualTenantId || b._id === this.currentBandTenantId
-            );
-            console.log('🔍 Found tenantDoc:', tenantDoc);
-            console.log('🔍 tenantDoc.userIds:', tenantDoc?.userIds);
-
-            // Members are in userIds array - convert to objects with userId property
-            if (tenantDoc && tenantDoc.userIds && Array.isArray(tenantDoc.userIds)) {
-                // Transform user ID strings to member objects for the template
-                this.currentBandMembers = tenantDoc.userIds.map(userId => ({
-                    userId: userId,
-                    name: tenantDoc.members?.find(m => m.userId === userId)?.name || userId.substring(0, 8) + '...',
-                    email: tenantDoc.members?.find(m => m.userId === userId)?.email,
-                    role: tenantDoc.members?.find(m => m.userId === userId)?.role
+            try {
+                const base = window.Auth.getMycouchBaseUrl().replace(/\/+$/, '');
+                const tid = encodeURIComponent(this.currentBandTenantId);
+                const res = await window.Auth.fetchWithAuth(
+                    `${base}/api/tenants/${tid}/members`,
+                    { method: 'GET' },
+                );
+                if (!res.ok) {
+                    const text = await res.text().catch(() => '');
+                    console.warn(`⚠️ loadBandMembers ${res.status}:`, text);
+                    return;
+                }
+                const data = await res.json();
+                const members = Array.isArray(data?.members) ? data.members : [];
+                // Server shape: { members: [{ user_hash, role, joined_at }, ...] }.
+                // UI shape: { userId: 'user_<hash>', name, role }. Email is no
+                // longer stored — under MNA1 the only identity is the pubkey.
+                this.currentBandMembers = members.map(m => ({
+                    userId: `user_${m.user_hash}`,
+                    name: `${m.user_hash.slice(0, 8)}…`,
+                    role: m.role,
+                    joinedAt: m.joined_at,
                 }));
-                console.log('✅ Band members loaded from /__tenants:', this.currentBandMembers);
-            } else {
-                console.warn('⚠️ No tenantDoc found or no userIds array. tenantDoc:', tenantDoc);
-                this.currentBandMembers = [];
+                console.log(`✅ Band members loaded (${this.currentBandMembers.length}):`, this.currentBandMembers);
+            } catch (e) {
+                console.error('❌ loadBandMembers failed:', e);
             }
         },
 
@@ -1876,19 +1793,19 @@
             }
 
             try {
-                // Update tenant document name field (the standard field)
+                // Update tenant name via the API; TenantManager keeps the
+                // local list in sync.
                 const band = this.userBands.find(b => b._id === this.currentBandTenantId);
-                if (band && window.tenantManager?.tenantsDb) {
-                    // Fetch current document from database to get latest _rev
+                if (band && window.tenantManager) {
                     try {
-                        const currentDoc = await window.tenantManager.tenantsDb.get(band._id);
-                        currentDoc.name = this.bandBeingEdited.name;
-                        await window.tenantManager.tenantsDb.put(currentDoc);
-                        console.log('✅ Updated tenant name to:', this.bandBeingEdited.name);
-                        // Update local reference
-                        band.name = this.bandBeingEdited.name;
+                        const updated = await window.tenantManager.updateTenant(
+                            band._id,
+                            { name: this.bandBeingEdited.name },
+                        );
+                        band.name = updated.name;
+                        console.log('✅ Updated tenant name to:', updated.name);
                     } catch (e) {
-                        console.error('Error fetching current tenant doc:', e);
+                        console.error('Error updating tenant name:', e);
                         throw e;
                     }
                 }
@@ -1911,6 +1828,63 @@
             }
         },
 
+        // Band Roster methods
+        async addBandMember() {
+            if (!this.newBandMember.name.trim()) {
+                this.showSnackbar('Member name is required', 'error');
+                return;
+            }
+            try {
+                await DB.addBandMember(this.newBandMember);
+                this.newBandMember = { name: '', role: '' };
+                this.showAddBandMember = false;
+                this.bandMembers = await DB.getAllBandMembers();
+            } catch (e) {
+                console.error('Error adding band member:', e);
+                this.showSnackbar('Error adding member', 'error');
+            }
+        },
+
+        startEditBandMember(member) {
+            this.editingBandMember = { ...member };
+        },
+
+        cancelEditBandMember() {
+            this.editingBandMember = null;
+        },
+
+        async saveEditBandMember() {
+            if (!this.editingBandMember?.name.trim()) {
+                this.showSnackbar('Member name is required', 'error');
+                return;
+            }
+            try {
+                await DB.updateBandMember(this.editingBandMember);
+                this.editingBandMember = null;
+                this.bandMembers = await DB.getAllBandMembers();
+            } catch (e) {
+                console.error('Error updating band member:', e);
+                this.showSnackbar('Error saving member', 'error');
+            }
+        },
+
+        async deleteBandMember(member) {
+            const confirmed = await this.showConfirmation(
+                'Remove Member',
+                `Remove ${member.name} from the band roster?`,
+                'Remove',
+                true
+            );
+            if (!confirmed) return;
+            try {
+                await DB.deleteBandMember(member._id);
+                this.bandMembers = await DB.getAllBandMembers();
+            } catch (e) {
+                console.error('Error deleting band member:', e);
+                this.showSnackbar('Error removing member', 'error');
+            }
+        },
+
         openInviteMemberDialog() {
             this.inviteMemberEmail = '';
             this.inviteMemberRole = 'editor';
@@ -1920,27 +1894,25 @@
         async inviteMember() {
              // Email is optional (just for reference)
              try {
-                 const token = await Clerk.session?.getToken();
                  // API expects internal format (with tenant_ prefix)
-                 const tenantId = this.currentBandTenantId.startsWith('tenant_') 
-                     ? this.currentBandTenantId 
+                 const tenantId = this.currentBandTenantId.startsWith('tenant_')
+                     ? this.currentBandTenantId
                      : `tenant_${this.currentBandTenantId}`;
-                 
+
                  const body = { role: this.inviteMemberRole };
                  if (this.inviteMemberEmail.trim()) {
                      body.email = this.inviteMemberEmail.trim();
                  }
-                 
-                 // Normalize URL: remove trailing slash to avoid double slashes
+
                  const baseUrl = this.options.mycouchBaseUrl.replace(/\/$/, '');
-                 const response = await fetch(`${baseUrl}/api/tenants/${tenantId}/invitations`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
+                 const response = await window.Auth.fetchWithAuth(
+                    `${baseUrl}/api/tenants/${tenantId}/invitations`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
                     },
-                    body: JSON.stringify(body)
-                });
+                );
 
                 if (!response.ok) {
                     const error = await response.json();
@@ -2031,21 +2003,15 @@
 
         async removeMember(member) {
              try {
-                 const token = await Clerk.session?.getToken();
-                 // API expects internal format (with tenant_ prefix)
                  const tenantId = this.currentBandTenantId.startsWith('tenant_')
                      ? this.currentBandTenantId
                      : `tenant_${this.currentBandTenantId}`;
                  const userId = member.userId;
-
-                 // Normalize URL: remove trailing slash to avoid double slashes
                  const baseUrl = this.options.mycouchBaseUrl.replace(/\/$/, '');
-                 const response = await fetch(`${baseUrl}/api/tenants/${tenantId}/members/${userId}`, {
-                    method: 'DELETE',
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
+                 const response = await window.Auth.fetchWithAuth(
+                    `${baseUrl}/api/tenants/${tenantId}/members/${userId}`,
+                    { method: 'DELETE' },
+                );
 
                 if (!response.ok) {
                     if (response.status === 403) {
@@ -2098,39 +2064,25 @@
 
         async leaveBand() {
             try {
-                const bandToLeave = this.userBands.find(b => b._id === this.currentBandTenantId || b.tenantId === this.currentBandTenantId);
+                const bandToLeave = this.userBands.find(
+                    b => b._id === this.currentBandTenantId || b.tenantId === this.currentBandTenantId,
+                );
                 const leavingBandName = bandToLeave?.name || 'Unknown Band';
 
-                // Get current user's ID (hashed format: user_<hash>)
-                const currentUserId = `user_${window.tenantManager.currentUserHash}`;
-
-                // API expects internal format (with tenant_ prefix)
-                const tenantId = this.currentBandTenantId.startsWith('tenant_')
-                    ? this.currentBandTenantId
-                    : `tenant_${this.currentBandTenantId}`;
-
-                const token = await Clerk.session?.getToken();
-                const baseUrl = this.options.mycouchBaseUrl.replace(/\/$/, '');
-
-                const response = await fetch(`${baseUrl}/api/tenants/${tenantId}/members/${currentUserId}`, {
-                    method: 'DELETE',
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-
-                if (!response.ok) {
-                    if (response.status === 403) {
+                try {
+                    await window.tenantManager.leaveTenant(this.currentBandTenantId);
+                } catch (e) {
+                    if (e.message?.includes('403')) {
                         this.showSnackbar('Owners cannot leave. Transfer ownership or delete the band.', 'error');
-                    } else {
-                        const error = await response.json();
-                        throw new Error(error.detail || 'Failed to leave band');
+                        return;
                     }
-                    return;
+                    throw e;
                 }
 
                 // Remove from local list
-                this.userBands = this.userBands.filter(b => b._id !== this.currentBandTenantId && b.tenantId !== this.currentBandTenantId);
+                this.userBands = this.userBands.filter(
+                    b => b._id !== this.currentBandTenantId && b.tenantId !== this.currentBandTenantId,
+                );
 
                 // Switch to first available band
                 if (this.userBands.length > 0) {
@@ -2140,14 +2092,12 @@
                     await this.loadData();
                     await this.loadBandDetails();
                 } else {
-                    // No more bands - show empty state
                     this.currentBandTenantId = null;
                     this.currentBandName = '';
                 }
 
                 this.showSnackbar(`Left "${leavingBandName}"`);
                 console.log('✅ Successfully left band:', leavingBandName);
-
             } catch (e) {
                 console.error('Error leaving band:', e);
                 if (e instanceof TypeError) {
@@ -2192,74 +2142,30 @@
 
         async deleteBand() {
             try {
-                // Capture band name before deletion
                 const bandToDelete = this.userBands.find(b => b._id === this.currentBandTenantId);
                 const deletedBandName = bandToDelete?.bandName || bandToDelete?.name || 'Unknown Band';
-                
-                const now = new Date().toISOString();
-                
-                // LOCAL-FIRST PATTERN: Soft-delete locally first, let sync handle server
-                // Do NOT make direct API calls - let PouchDB replicate changes to server
-                
-                // 1. Soft-delete tenant document in local PouchDB
-                if (window.tenantManager?.tenantsDb) {
-                    try {
-                        const virtualTenantId = this.getVirtualTenantId(this.currentBandTenantId);
-                        const internalId = `tenant_${virtualTenantId}`;
-                        const doc = await window.tenantManager.tenantsDb.get(internalId);
-                        // Use deletedAt field to match server (not deleted: true)
-                        doc.deletedAt = now;
-                        doc.updatedAt = now;
-                        await window.tenantManager.tenantsDb.put(doc);
-                        console.log('✅ Marked local tenant as soft-deleted:', internalId);
-                    } catch (e) {
-                        if (e.status === 404) {
-                            console.log('ℹ️ Tenant not in local PouchDB (may not have synced yet)');
-                        } else {
-                            console.warn('⚠️ Could not soft-delete tenant in local PouchDB:', e);
-                            throw e; // Don't continue if we can't mark deletion
-                        }
-                    }
-                }
-                
-                // 2. Soft-delete all band documents in local roady database
-                try {
-                    const db = DB.getDb();
-                    const allDocs = await db.allDocs({include_docs: true});
-                    const bandDocs = allDocs.rows
-                        .map(row => row.doc)
-                        .filter(doc => doc.tenant === this.currentBandTenantId)
-                        .map(doc => ({
-                            ...doc, 
-                            deletedAt: now,
-                            updatedAt: now
-                        }));
-                    
-                    if (bandDocs.length > 0) {
-                        await db.bulkDocs(bandDocs);
-                        console.log('✅ Soft-deleted', bandDocs.length, 'documents for band:', this.currentBandTenantId);
-                    }
-                } catch (e) {
-                    console.warn('⚠️ Could not soft-delete band documents:', e);
-                    throw e; // Don't continue if local DB save fails
-                }
-                
-                // 3. Update UI (remove from userBands list)
+
+                // Server-side cascade: DELETE /api/tenants/:tid removes the
+                // tenant document; equipment/gigs/templates in that tenant
+                // become orphans in D1 but are invisible to clients because
+                // the DAL filters by `currentTenant`. If/when orphan GC is
+                // needed it lives on the server, not the client.
+                await window.tenantManager.deleteTenant(this.currentBandTenantId);
+
+                // Update UI
                 this.userBands = this.userBands.filter(b => b._id !== this.currentBandTenantId);
-                
-                // 4. Switch to first available band
                 if (this.userBands.length > 0) {
                     this.currentBandTenantId = this.userBands[0]._id;
                     this.updateCurrentBandName();
                     DB.setTenant(this.userBands[0]._id);
                     await this.loadData();
                     await this.loadBandDetails();
+                } else {
+                    this.currentBandTenantId = null;
+                    this.currentBandName = '';
                 }
-                
-                // 5. PouchDB sync will replicate soft-deleted documents to server automatically
-                console.log('ℹ️ Band soft-deleted locally. PouchDB sync will replicate changes to server.');
+
                 this.showSnackbar(`Band "${deletedBandName}" has been deleted`);
-                
             } catch (e) {
                 console.error('Error deleting band:', e);
                 this.showSnackbar('Error deleting band. Changes not saved.', 'error');
