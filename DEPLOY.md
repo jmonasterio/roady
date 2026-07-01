@@ -33,13 +33,19 @@ CLOUDFLARE_ACCOUNT_ID=...
 Both deploy scripts source this file automatically. `wrangler login`
 (interactive OAuth) does **not** work headless — the API token is required.
 
-## What actually ships
+## What actually ships (and what doesn't)
 
-`wrangler pages deploy .` uploads the **entire working directory** (static
-assets + `functions/`) with `--commit-dirty=true`. Consequences:
+`wrangler pages deploy .` uploads the **entire local working directory**
+(static assets + `functions/`) straight to Cloudflare with
+`--commit-dirty=true`. Deployment reads from **disk, not git**:
 
-- **Uncommitted WIP goes live too.** Commit first so git matches what's
-  deployed.
+- **Git/GitHub is NOT part of deploying.** There is no GitHub Actions or
+  push-to-deploy pipeline. `git push` only updates version control — it
+  never triggers a deploy. A deploy happens *only* when you run
+  `./deploy.sh` / `deploy.bat` locally.
+- **Uncommitted WIP goes live too** (it's read from disk). Committing is
+  for history, not a deploy prerequisite — but keeping git in sync means
+  the repo reflects what's actually live.
 - `--branch=main` publishes to **production** (roady.argw.com), not a
   preview. The command prints a `*.roady-bxp.pages.dev` build alias; the
   custom domain updates within seconds.
