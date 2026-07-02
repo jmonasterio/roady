@@ -229,8 +229,10 @@ const MAX_DEVICES_PER_MEMBER = 5;
                     return false;
                 }
 
-                // Normalize URL: remove trailing slash to avoid double slashes
-                const baseUrl = this.options.mycouchBaseUrl.replace(/\/$/, '');
+                // Use the resolved base (defaults to `${origin}/__api__`), NOT the
+                // raw option — an empty option targets same-origin `/api/...`,
+                // which Cloudflare Pages answers with a bodyless 405 for PATCH.
+                const baseUrl = window.Auth.getMycouchBaseUrl().replace(/\/$/, '');
                 const response = await window.Auth.fetchWithAuth(
                     `${baseUrl}/api/invitations/accept`,
                     {
@@ -298,8 +300,12 @@ const MAX_DEVICES_PER_MEMBER = 5;
                     this.showSnackbar('Invitation has been revoked', 'error');
                     return false;
                 } else {
-                    const error = await response.json();
-                    throw new Error(error.detail || `Server error: ${response.status}`);
+                    // Error bodies aren't guaranteed JSON (e.g. a bodyless 405
+                    // from the static edge), so read text and fall back cleanly.
+                    const detail = await response.text().catch(() => '');
+                    let msg = `Server error: ${response.status}`;
+                    try { const j = JSON.parse(detail); if (j?.detail) msg = j.detail; } catch (_) {}
+                    throw new Error(msg);
                 }
             } catch (e) {
                 console.error('❌ Error accepting invitation:', e);
