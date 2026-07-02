@@ -3,11 +3,11 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#1a1a1a">
     <meta name="description" content="Equipment checklist for band roadies">
     <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Roady">
     <title>Roady - Equipment Checklist</title>
 
@@ -20,14 +20,14 @@
 
     <!-- Stylesheets -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="css/styles.css?v=20260702a">
     <script src="https://cdn.jsdelivr.net/npm/dexie@4.0.10/dist/dexie.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <script src="js/auth.js"></script>
-    <script src="js/sync.js"></script>
-    <script src="js/db.js"></script>
-    <script src="js/tenant-manager.js"></script>
-    <script src="js/app.js"></script>
+    <script src="js/auth.js?v=20260702a"></script>
+    <script src="js/sync.js?v=20260702a"></script>
+    <script src="js/db.js?v=20260702a"></script>
+    <script src="js/tenant-manager.js?v=20260702a"></script>
+    <script src="js/app.js?v=20260702c"></script>
 
 
     <!-- Service Worker Registration -->
@@ -55,13 +55,13 @@
         <div id="nostr-login-card" style="width:100%;max-width:420px;"></div>
     </div>
     <div x-data="roady" x-cloak @init="init().catch(error => { console.error('❌ App initialization failed:', error); window.fatalError = error; })">
-        <nav class="container-fluid">
-            <ul>
+        <nav class="container-fluid top-nav">
+            <ul class="nav-brand">
                 <li><strong>Roady</strong></li>
                 <li x-show="!isLoading && isAuthenticated && userBands.length > 0">
                     <a href="#" @click.prevent="currentView = 'settings'; settingsTab = 'myband'" 
                        style="display: inline-flex; align-items: center; gap: 0.5rem;">
-                        <span x-text="currentBandName"></span>
+                        <span class="band-name" x-text="currentBandName"></span>
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: middle;">
                             <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
                             <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
@@ -69,13 +69,11 @@
                     </a>
                 </li>
             </ul>
-            <ul x-show="!isLoading && isAuthenticated">
+            <ul class="nav-links" x-show="!isLoading && isAuthenticated">
                 <li><a href="#" @click.prevent="currentView = 'gigs'"
                         :class="{ active: currentView === 'gigs' }">Gigs</a></li>
                 <li><a href="#" @click.prevent="currentView = 'equipment'; equipmentTab = 'catalog'"
-                        :class="{ active: currentView === 'equipment' && equipmentTab === 'catalog' }">Equipment</a></li>
-                <li><a href="#" @click.prevent="currentView = 'equipment'; equipmentTab = 'templates'"
-                        :class="{ active: currentView === 'equipment' && equipmentTab === 'templates' }">Templates</a></li>
+                        :class="{ active: currentView === 'equipment' }">Equipment</a></li>
                 <li><a href="#" @click.prevent="currentView = 'setlists'; setlistTab = 'songs'"
                         :class="{ active: currentView === 'setlists' }">Set List</a></li>
                 <li><a href="#" @click.prevent="currentView = 'members'"
@@ -87,11 +85,12 @@
                 <li x-show="options.couchDbUrl" style="opacity: 0.7; font-size: 0.85em;" x-text="getSyncStatusText()">
                 </li>
             </ul>
-            <ul x-show="isAuthenticated" style="margin:0;padding:0;list-style:none;">
+            <ul x-show="isAuthenticated" class="nav-user" style="margin:0;padding:0;list-style:none;">
                 <li style="display:flex;align-items:center;gap:0.5rem;">
+                    <span class="sync-dot" x-show="options.couchDbUrl" :class="'sync-' + syncStatus" :title="getSyncStatusText()"></span>
                     <span x-html="nostrAvatarHtml"></span>
-                    <span x-text="nostrDisplayName" style="font-size:0.85rem;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" :title="nostrNpub"></span>
-                    <button class="secondary outline" style="padding:0.2rem 0.6rem;font-size:0.75rem;margin:0;" @click="window.Auth.logout();location.reload()">Sign out</button>
+                    <span class="nav-user-details" x-text="nostrDisplayName" style="font-size:0.85rem;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" :title="nostrNpub"></span>
+                    <button class="secondary outline nav-user-details" style="padding:0.2rem 0.6rem;font-size:0.75rem;margin:0;" @click="window.Auth.logout();location.reload()">Sign out</button>
                 </li>
             </ul>
         </nav>
@@ -100,13 +99,29 @@
 
             <!-- Signer offline banner — auto-retry backs off and stops to
                  avoid rate-limiting the remote signer; user reconnects here. -->
-            <div x-show="signerOffline" x-cloak role="alert"
+            <div x-show="signerOffline || isRetrying" x-cloak role="alert"
                 style="background: var(--pico-del-color, #d9534f); color: #fff; border-radius: var(--pico-border-radius); padding: 0.75rem 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 1rem;">
-                <span style="flex: 1; font-size: 0.9rem;">⚠️ Can't reach your nostr signer. Approve the request in your signer app, then reconnect.</span>
-                <button @click="reconnect()" class="secondary"
-                    style="margin: 0; white-space: nowrap; padding: 0.375rem 0.75rem; font-size: 0.85rem;">
-                    Reconnect
-                </button>
+                <span style="flex: 1; font-size: 0.9rem;"
+                    x-text="isRetrying ? '🔄 Reconnecting… changes are saved on this device and will sync automatically.' : '⚠️ Not connected — signer or network unreachable. Changes are saved on this device and will sync automatically.'"></span>
+                <button @click="reconnect()" class="secondary" :disabled="isRetrying"
+                    style="margin: 0; white-space: nowrap; padding: 0.375rem 0.75rem; font-size: 0.85rem;"
+                    x-text="isRetrying ? 'Reconnecting…' : 'Reconnect'"></button>
+            </div>
+
+            <!-- Signing-not-authorized gate. A network outage is a dismissible
+                 banner (above); a permission denial means we have an identity but
+                 cannot sign, so we block the app and force a fresh handshake that
+                 re-requests perms. -->
+            <div x-show="signerDenied" x-cloak role="alertdialog" aria-modal="true"
+                style="position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.75); display: flex; align-items: center; justify-content: center; padding: 1rem;">
+                <article style="max-width: 28rem; margin: 0;">
+                    <header><strong>🔐 Signing access required</strong></header>
+                    <p>You're identified, but your signer hasn't granted permission to sign. Reconnect and approve the signing request in your signer app.</p>
+                    <footer style="display: flex; gap: 0.5rem; justify-content: flex-end; margin: 0;">
+                        <button class="secondary outline" style="margin: 0;" @click="window.Auth.logout(); location.reload()">Sign out</button>
+                        <button style="margin: 0;" @click="reauthorize()">Reconnect &amp; Approve</button>
+                    </footer>
+                </article>
             </div>
 
             <!-- Fatal Error Modal -->
@@ -175,12 +190,12 @@
                             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                                 <label>
                                     Arrival Time (optional)
-                                    <input type="time" x-model="newGig.arrivalTime" value="18:00" />
+                                    <input type="time" x-ref="arrivalTimeInput" x-model="newGig.arrivalTime" @focus="timeFocus('arrivalTime')" @change="timePmCoerce('arrivalTime')" />
                                     <small class="text-muted">When crew should arrive</small>
                                 </label>
                                 <label>
                                     Doors Open (optional)
-                                    <input type="time" x-model="newGig.doorsOpenTime" value="19:00" />
+                                    <input type="time" x-ref="doorsTimeInput" x-model="newGig.doorsOpenTime" @focus="timeFocus('doorsOpenTime')" @change="timePmCoerce('doorsOpenTime')" />
                                     <small class="text-muted">When doors open to public</small>
                                 </label>
                             </div>
@@ -218,9 +233,12 @@
                                 </p>
                                 <p x-show="gig.arrivalTime || gig.doorsOpenTime" class="text-muted"
                                     style="font-size: 0.85rem; margin-top: 0.25rem;">
-                                    <span x-show="gig.arrivalTime">⏰ <span x-text="gig.arrivalTime"></span></span>
+                                    <span x-show="gig.arrivalTime">⏰ Arrival <span x-text="gig.arrivalTime"></span></span>
                                     <span x-show="gig.arrivalTime && gig.doorsOpenTime"> • </span>
-                                    <span x-show="gig.doorsOpenTime">🚪 <span x-text="gig.doorsOpenTime"></span></span>
+                                    <span x-show="gig.doorsOpenTime">🎸 Start <span x-text="gig.doorsOpenTime"></span></span>
+                                </p>
+                                <p x-show="gig.mapLink" class="text-muted" style="font-size: 0.85rem; margin-top: 0.25rem;">
+                                    <a :href="gig.mapLink" target="_blank" rel="noopener" @click.stop>📍 Open Map</a>
                                 </p>
                                 <small class="progress">
                                     To Gig: <span x-text="getChecklistProgress(gig.loadoutChecklist)"></span> |
@@ -292,45 +310,16 @@
                                         </div>
                                     </div>
 
-                                    <!-- Missing items section (prominent) -->
-                                    <div class="checklist-section-missing">
+                                    <!-- Stable checklist: tap toggles in place -->
+                                    <div class="checklist">
                                         <template x-for="(item, index) in selectedGig.loadoutChecklist" :key="index">
-                                            <div x-show="!item.checked">
-                                                <div class="checklist-item-missing"
-                                                    @click="toggleChecklistItem('loadout', index)">
-                                                    <div class="item-icon">⬜</div>
-                                                    <div class="item-content">
-                                                        <div class="item-name"
-                                                            x-text="getEquipmentName(item.equipmentId, item.itemNumber)">
-                                                        </div>
-                                                        <div class="item-action">Tap to mark as loaded</div>
-                                                    </div>
-                                                </div>
+                                            <div class="check-row" :class="{ 'is-checked': item.checked }"
+                                                @click="toggleChecklistItem('loadout', index)">
+                                                <div class="check-box" x-text="item.checked ? '✅' : '⬜'"></div>
+                                                <div class="check-name"
+                                                    x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
                                             </div>
                                         </template>
-                                    </div>
-
-                                    <!-- Loaded items section (collapsible) -->
-                                    <div class="checklist-section-loaded">
-                                        <h5 class="section-heading-loaded" @click="showLoadedItems = !showLoadedItems"
-                                            style="cursor: pointer;">
-                                            ✓ LOADED
-                                            <span x-text="showLoadedItems ? '▼' : '▶'"></span>
-                                        </h5>
-                                        <div x-show="showLoadedItems" class="checklist">
-                                            <template x-for="(item, index) in selectedGig.loadoutChecklist"
-                                                :key="index">
-                                                <div x-show="item.checked">
-                                                    <div class="checklist-item-loaded"
-                                                        @click="toggleChecklistItem('loadout', index)">
-                                                        <div class="item-icon">✓</div>
-                                                        <div class="item-name"
-                                                            x-text="getEquipmentName(item.equipmentId, item.itemNumber)">
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </template>
-                                        </div>
                                     </div>
                                 </div>
                             </template>
@@ -432,42 +421,16 @@
                                         </div>
                                     </div>
 
-                                    <!-- Missing items section (what you still need to find and pack) -->
-                                    <div class="checklist-section-missing">
+                                    <!-- Stable checklist: tap toggles in place -->
+                                    <div class="checklist">
                                         <template x-for="(item, index) in selectedGig.loadinChecklist" :key="index">
-                                            <div x-show="!item.checked">
-                                                <div class="checklist-item-missing" @click="toggleLoadinItem(index)">
-                                                    <div class="item-icon">⬜</div>
-                                                    <div class="item-content">
-                                                        <div class="item-name"
-                                                            x-text="getEquipmentName(item.equipmentId, item.itemNumber)">
-                                                        </div>
-                                                        <div class="item-action">Tap to mark as packed</div>
-                                                    </div>
-                                                </div>
+                                            <div class="check-row" :class="{ 'is-checked': item.checked }"
+                                                @click="toggleLoadinItem(index)">
+                                                <div class="check-box" x-text="item.checked ? '✅' : '⬜'"></div>
+                                                <div class="check-name"
+                                                    x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
                                             </div>
                                         </template>
-                                    </div>
-
-                                    <!-- Packed items section (collapsible) -->
-                                    <div class="checklist-section-loaded">
-                                        <h5 class="section-heading-loaded" @click="showPackedItems = !showPackedItems"
-                                            style="cursor: pointer;">
-                                            ✓ PACKED
-                                            <span x-text="showPackedItems ? '▼' : '▶'"></span>
-                                        </h5>
-                                        <div x-show="showPackedItems" class="checklist">
-                                            <template x-for="(item, index) in selectedGig.loadinChecklist" :key="index">
-                                                <div x-show="item.checked">
-                                                    <div class="checklist-item-loaded" @click="toggleLoadinItem(index)">
-                                                        <div class="item-icon">✓</div>
-                                                        <div class="item-name"
-                                                            x-text="getEquipmentName(item.equipmentId, item.itemNumber)">
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </template>
-                                        </div>
                                     </div>
                                 </div>
                             </template>
@@ -601,12 +564,40 @@
                 </div>
             </div>
 
+            <!-- More View (mobile) -->
+            <div x-show="currentView === 'more'">
+                <hgroup>
+                    <h2>More</h2>
+                    <p>Account, band and app management</p>
+                </hgroup>
+
+                <article style="display: flex; align-items: center; gap: 0.75rem; padding: 1rem;">
+                    <span x-html="nostrAvatarHtml"></span>
+                    <div style="min-width: 0;">
+                        <strong x-text="nostrDisplayName" style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></strong>
+                        <small class="text-muted" x-text="nostrNpub" style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></small>
+                    </div>
+                </article>
+
+                <div class="more-list">
+                    <button class="outline contrast" @click="currentView = 'members'">Members</button>
+                    <button class="outline contrast" @click="currentView = 'settings'">Settings</button>
+                    <button class="outline contrast" @click="currentView = 'bands'">Bands</button>
+                    <button class="outline secondary" @click="window.Auth.logout();location.reload()">Sign out</button>
+                </div>
+            </div>
+
             <!-- Equipment View -->
             <div x-show="currentView === 'equipment' && equipmentTab === 'catalog'">
                 <hgroup>
-                    <h2>Equipment Catalog</h2>
+                    <h2>Equipment</h2>
                     <p>Manage all your gear: microphones, cables, amplifiers, drums, speakers, stands, lights, and more</p>
                 </hgroup>
+
+                <div class="tab-buttons" style="display: flex; gap: 0.5rem;">
+                    <button @click="equipmentTab = 'catalog'">Catalog</button>
+                    <button @click="equipmentTab = 'templates'" class="secondary outline">Templates</button>
+                </div>
 
                 <hgroup>
                     <h3>Add Equipment Items</h3>
@@ -661,9 +652,14 @@
             <!-- Templates View -->
             <div x-show="currentView === 'equipment' && equipmentTab === 'templates'">
                 <hgroup>
-                    <h2>Templates</h2>
+                    <h2>Equipment</h2>
                     <p>Create equipment templates for different gig types. Examples: "Small Club", "Outdoor Festival", "Theater", "Studio Session". Choose a template when creating a gig to auto-populate your checklist.</p>
                 </hgroup>
+
+                <div class="tab-buttons" style="display: flex; gap: 0.5rem;">
+                    <button @click="equipmentTab = 'catalog'" class="secondary outline">Catalog</button>
+                    <button @click="equipmentTab = 'templates'">Templates</button>
+                </div>
 
                     <div class="settings-section-header">
                         <button @click="showAddGigType = true">+ Add Template</button>
@@ -829,6 +825,8 @@
                                 <div class="button-group">
                                     <button @click="duplicateSetlistTemplate(tpl._id)" class="secondary outline">Duplicate</button>
                                     <button @click="editSetlistTemplate(tpl)" class="contrast">Edit</button>
+                                    <button @click="deleteSetlistTemplate(tpl._id)" class="secondary outline"
+                                        style="background: var(--pico-del-color, #c0392b); color: white;">Delete</button>
                                 </div>
                             </article>
                         </template>
@@ -936,7 +934,7 @@
                         <template x-for="member in currentBandMembers" :key="member.userId">
                             <div style="display: flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid var(--pico-form-element-border-color);">
                                 <div style="flex: 1;">
-                                    <strong x-text="member.email || member.name || 'Unknown User'"></strong>
+                                    <strong x-text="tenantMemberName(member)"></strong>
                                     <p style="color: var(--pico-muted-color); margin: 0.25rem 0 0 0; font-size: 0.9rem;">
                                         <span x-text="member.role || 'member'"></span>
                                     </p>
@@ -958,8 +956,10 @@
                         <header style="display: flex; align-items: center; gap: 1rem;">
                             <a href="#" @click.prevent="showInviteMemberDialog = false"
                                 style="font-size: 1.5rem; text-decoration: none;">←</a>
-                            <h3 style="margin: 0;">Invite Member</h3>
+                            <h3 style="margin: 0;" x-text="inviteMode === 'add' ? 'Add a Device' : inviteMode === 'replace' ? 'Replace Lost Device' : 'Invite Member'"></h3>
                         </header>
+                        <p x-show="inviteMode === 'add'" class="text-muted" style="margin: 0 var(--pico-spacing) 0.5rem; font-size: 0.85rem;">Adds another device for this member — existing devices keep working; the oldest drops off past the limit.</p>
+                        <p x-show="inviteMode === 'replace'" style="margin: 0 var(--pico-spacing) 0.5rem; font-size: 0.85rem; color: var(--pico-del-color, #c62828);">⚠️ Generating this invite revokes all of this member's current device keys — only the new device will work afterward.</p>
                         <div style="flex: 1; overflow-y: auto; padding: 0 var(--pico-spacing);">
                             <label>
                                 Role
@@ -969,6 +969,22 @@
                                 </select>
                                 <small class="text-muted">Permissions for this band member</small>
                             </label>
+                            <label style="margin-top: 1rem;">
+                                Assign to roster member
+                                <select x-model="inviteRosterMemberId">
+                                    <option value="">— Don't link to a roster member —</option>
+                                    <template x-for="m in bandMembers" :key="m._id">
+                                        <option :value="m._id" x-text="m.name + (m.role ? ' · ' + m.role : '') + (memberIsLinked(m) ? ' (' + memberDeviceCount(m) + ' device' + (memberDeviceCount(m) !== 1 ? 's' : '') + ')' : (m.pendingInviteToken ? ' (invite pending)' : ''))"></option>
+                                    </template>
+                                    <option value="__new__">＋ Create new roster member…</option>
+                                </select>
+                                <small class="text-muted">Link this invite to someone in your band roster</small>
+                            </label>
+                            <div x-show="inviteRosterMemberId === '__new__'"
+                                 style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
+                                <input type="text" x-model="inviteNewMemberName" placeholder="Name" style="margin: 0;" />
+                                <input type="text" x-model="inviteNewMemberRole" placeholder="Role / instrument" style="margin: 0;" />
+                            </div>
                             <label style="margin-top: 1rem;">
                                 Note (Optional)
                                 <input type="text" x-model="inviteMemberEmail" 
@@ -1071,7 +1087,7 @@
                                 <h4 style="margin: 0;">Band Roster</h4>
                                 <p class="text-muted" style="margin: 0.25rem 0 0 0; font-size: 0.9rem;">The musicians in your band and their instrument or role</p>
                             </div>
-                            <button @click="showAddBandMember = true; newBandMember = { name: '', role: '' }"
+                            <button @click="showAddBandMember = true; newBandMember = { name: '', role: '' }; addMemberAsSelf = false"
                                     x-show="!showAddBandMember"
                                     class="secondary outline" style="white-space: nowrap;">
                                 + Add Member
@@ -1097,6 +1113,10 @@
                                            style="margin-top: 0.25rem;" />
                                 </label>
                             </div>
+                            <label x-show="getCurrentUserRole() === 'owner'" style="display: flex; align-items: center; gap: 0.5rem; margin: 0.75rem 0 0; font-size: 0.9rem;">
+                                <input type="checkbox" x-model="addMemberAsSelf" style="margin: 0;" />
+                                This is me (link my Nostr identity)
+                            </label>
                             <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
                                 <button @click="addBandMember()" :disabled="!newBandMember.name.trim()">Add</button>
                                 <button @click="showAddBandMember = false" class="secondary outline">Cancel</button>
@@ -1109,13 +1129,30 @@
 
                                 <!-- View mode -->
                                 <template x-if="!editingBandMember || editingBandMember._id !== member._id">
-                                    <div style="display: flex; align-items: center; gap: 0.75rem; width: 100%;">
+                                    <div style="display: flex; align-items: center; gap: 0.5rem; width: 100%;">
                                         <div style="flex: 1;">
                                             <span x-text="member.name" style="font-weight: 500;"></span>
                                             <span x-show="member.role"
                                                   x-text="' · ' + member.role"
                                                   style="color: var(--pico-muted-color); font-size: 0.9rem;"></span>
+                                            <span x-show="memberIsLinked(member)"
+                                                  x-text="memberDeviceCount(member) > 1 ? ('linked · ' + memberDeviceCount(member) + ' devices') : 'linked'"
+                                                  style="color: var(--pico-ins-color, #2e7d32); font-size: 0.7rem; border: 1px solid currentColor; border-radius: 4px; padding: 0.05rem 0.4rem; margin-left: 0.4rem;"></span>
+                                            <span x-show="member.pendingInviteToken && !memberIsLinked(member)"
+                                                  style="color: var(--pico-muted-color); font-size: 0.7rem; border: 1px solid currentColor; border-radius: 4px; padding: 0.05rem 0.4rem; margin-left: 0.4rem;">invite pending</span>
                                         </div>
+                                        <button x-show="memberIsLinked(member) && ['owner','admin'].includes(getCurrentUserRole())"
+                                                @click="openAddDeviceDialog(member)"
+                                                class="secondary outline" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; margin: 0;"
+                                                title="Add another device for this member">＋ Device</button>
+                                        <button x-show="memberIsLinked(member) && ['owner','admin'].includes(getCurrentUserRole())"
+                                                @click="openReplaceDeviceDialog(member)"
+                                                class="secondary outline" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; margin: 0;"
+                                                title="Replace a lost device (revokes existing keys)">Replace</button>
+                                        <button x-show="!memberIsLinked(member) && getCurrentUserRole() === 'owner'"
+                                                @click="confirmClaimRosterMember(member)"
+                                                class="secondary outline" style="padding: 0.3rem 0.6rem; font-size: 0.8rem; margin: 0;"
+                                                title="Assign your Nostr key to this roster entry">This is me</button>
                                         <button @click="startEditBandMember(member)"
                                                 class="secondary outline" style="padding: 0.3rem 0.7rem; font-size: 0.85rem; margin: 0;">
                                             Edit
@@ -1388,18 +1425,60 @@
             </dialog>
         </main>
 
+        <!-- Bottom tab bar (mobile) -->
+        <nav class="bottom-nav" x-show="!isLoading && isAuthenticated" x-cloak>
+            <button :class="{ active: currentView === 'gigs' }" @click="currentView = 'gigs'">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                    <line x1="16" y1="2" x2="16" y2="6"></line>
+                    <line x1="8" y1="2" x2="8" y2="6"></line>
+                    <line x1="3" y1="10" x2="21" y2="10"></line>
+                </svg>
+                <span>Gigs</span>
+            </button>
+            <button :class="{ active: currentView === 'equipment' }" @click="currentView = 'equipment'; equipmentTab = 'catalog'">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                    <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                    <line x1="12" y1="22.08" x2="12" y2="12"></line>
+                </svg>
+                <span>Equipment</span>
+            </button>
+            <button :class="{ active: currentView === 'setlists' }" @click="currentView = 'setlists'; setlistTab = 'songs'">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9 18V5l12-2v13"></path>
+                    <circle cx="6" cy="18" r="3"></circle>
+                    <circle cx="18" cy="16" r="3"></circle>
+                </svg>
+                <span>Set List</span>
+            </button>
+            <button :class="{ active: ['more', 'members', 'settings', 'bands'].includes(currentView) }" @click="currentView = 'more'">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="1"></circle>
+                    <circle cx="5" cy="12" r="1"></circle>
+                    <circle cx="19" cy="12" r="1"></circle>
+                </svg>
+                <span>More</span>
+            </button>
+        </nav>
+
         <!-- Performance (live) view — full-screen, large text, print surface -->
         <div x-show="performanceSetlist" class="performance-view" x-cloak>
             <template x-if="performanceSetlist">
                 <div class="performance-inner">
-                    <div class="performance-toolbar no-print">
-                        <h2 x-text="performanceSetlist.name || 'Set List'" style="margin: 0;"></h2>
+                    <div class="performance-toolbar no-print" style="justify-content: flex-end;">
                         <div class="button-group">
-                            <button @click="window.print()" class="secondary outline">Print</button>
                             <button @click="closePerformanceView()">Close</button>
                         </div>
                     </div>
-                    <h1 class="performance-title" x-text="performanceSetlist.name || 'Set List'"></h1>
+                    <h1 class="performance-title" x-text="(selectedGig?.name ? selectedGig.name + ' - ' : '') + (performanceSetlist.name || 'Set List')"></h1>
+                    <div class="performance-meta" x-show="selectedGig">
+                        <div class="perf-times">
+                            <span x-show="selectedGig?.date" x-text="formatDate(selectedGig?.date)"></span>
+                            <span x-show="selectedGig?.arrivalTime">Arrival <span x-text="selectedGig?.arrivalTime"></span></span>
+                            <span x-show="selectedGig?.doorsOpenTime">Start <span x-text="selectedGig?.doorsOpenTime"></span></span>
+                        </div>
+                    </div>
                     <template x-for="section in performanceSetlist.sections" :key="section.id">
                         <div class="performance-section">
                             <h3 x-text="section.name"></h3>
@@ -1421,10 +1500,15 @@
         </div>
     </div>
     <script type="module">
-        import { NostrAuth, NostrLoginUI, encodeNpub, nuiAvatarHtml, nuiDisplayName } from './js/nostr-universal.js?v=20260305f';
+        import { NostrAuth, NostrLoginUI, encodeNpub, nuiAvatarHtml, nuiDisplayName } from './js/nostr-universal.js?v=20260702b';
 
         const APP_NAME = 'roady';
         const RELAYS   = ['wss://relay.nsec.app', 'wss://relay.damus.io', 'wss://nos.lol'];
+        // Read-friendly relays for profile (kind:0) lookups. purplepag.es indexes
+        // profile metadata specifically; damus/primal/nos.lol have broad coverage.
+        // Kept separate from the signer relays above — relay.nsec.app is a signer
+        // relay, not a good profile source.
+        const PROFILE_RELAYS = ['wss://purplepag.es', 'wss://relay.damus.io', 'wss://relay.primal.net', 'wss://nos.lol'];
 
         const auth = new NostrAuth({
             relays:         RELAYS,
@@ -1441,38 +1525,43 @@
         let _sessionReady = false;
         const overlay = document.getElementById('nostr-login-overlay');
 
+        // Post-connect bootstrap — hides the overlay and signals app.init(),
+        // which awaits the `nostr-connected` event. Shared by the login UI's
+        // onConnected and the invite intro's "create key" path.
+        async function proceedConnected(pubkey, profile) {
+            overlay.style.display = 'none';
+            window.Auth._cachedPubkey  = pubkey;
+            window.Auth._cachedProfile = profile;
+            if (!_sessionReady) {
+                _sessionReady = true;
+                let mycouchBaseUrl = '';
+                try {
+                    const optDb = new Dexie('roady_options');
+                    optDb.version(1).stores({ kv: '&key' });
+                    const row = await optDb.kv.get('app_options');
+                    const saved = row?.value?.mycouchBaseUrl;
+                    // Migration: legacy default `db.argw.com` is gone; empty
+                    // string opts into same-origin via /__api__.
+                    if (saved && saved !== 'https://db.argw.com') mycouchBaseUrl = saved;
+                } catch (_) {}
+                window.Auth.setMycouchBaseUrl(mycouchBaseUrl);
+                // No token to warm under MNA1 — each request signs fresh.
+                window.dispatchEvent(new CustomEvent('nostr-connected', { detail: { pubkey, profile } }));
+            } else {
+                window.dispatchEvent(new CustomEvent('nostr-profile-updated', { detail: { pubkey, profile } }));
+            }
+        }
+
         const loginUI = new NostrLoginUI(
             document.getElementById('nostr-login-card'),
             auth,
             {
                 appName:       'Roady',
-                profileRelays: RELAYS,
+                profileRelays: PROFILE_RELAYS,
                 allowGuestMode: true,
-
-                async onConnected(pubkey, profile, connectedEl) {
-                    overlay.style.display = 'none';
-                    window.Auth._cachedPubkey  = pubkey;
-                    window.Auth._cachedProfile = profile;
-                    if (!_sessionReady) {
-                        _sessionReady = true;
-                        let mycouchBaseUrl = '';
-                        try {
-                            const optDb = new Dexie('roady_options');
-                            optDb.version(1).stores({ kv: '&key' });
-                            const row = await optDb.kv.get('app_options');
-                            const saved = row?.value?.mycouchBaseUrl;
-                            // Migration: legacy default `db.argw.com` is gone;
-                            // empty string opts into same-origin via /__api__.
-                            if (saved && saved !== 'https://db.argw.com') mycouchBaseUrl = saved;
-                        } catch (_) {}
-                        window.Auth.setMycouchBaseUrl(mycouchBaseUrl);
-                        // No token to warm under MNA1 — each request signs fresh.
-                        window.dispatchEvent(new CustomEvent('nostr-connected', { detail: { pubkey, profile } }));
-                    } else {
-                        window.dispatchEvent(new CustomEvent('nostr-profile-updated', { detail: { pubkey, profile } }));
-                    }
-                },
-
+                guestLabel: 'New to Nostr? <strong>Create a key on this device</strong>',
+                guestHint: 'Joining a band? Open your invite link instead — it ties your new key to your role in the band.',
+                onConnected: (pubkey, profile) => proceedConnected(pubkey, profile),
                 onDisconnect() {
                     overlay.style.display = 'flex';
                     location.reload();
@@ -1481,7 +1570,47 @@
             }
         );
 
-        loginUI.start();
+        // Invite-aware onboarding (goal 1): arriving via an invite link with no
+        // saved session leads with one-tap "create your key" (self-generated
+        // guest key) instead of the signer picker. Signer users still get
+        // "I already have a Nostr signer". Returning devices auto-restore below.
+        function renderInviteIntro() {
+            const card = document.getElementById('nostr-login-card');
+            card.innerHTML =
+                '<article style="max-width:420px;margin:0 auto;text-align:center;padding:1.5rem;">' +
+                  '<h3 style="margin:0 0 0.5rem;">You\u2019re invited to a band on Roady</h3>' +
+                  '<p style="color:var(--pico-muted-color);margin:0 0 1.25rem;font-size:0.9rem;">Create your identity to accept \u2014 no app or account needed. It stays on this device; you can add more devices later.</p>' +
+                  '<button id="invite-create-key" style="width:100%;margin:0 0 0.75rem;">Accept &amp; create my key</button>' +
+                  '<button id="invite-use-signer" class="secondary outline" style="width:100%;margin:0;">I already have a Nostr signer</button>' +
+                '</article>';
+            const createBtn = card.querySelector('#invite-create-key');
+            const signerBtn = card.querySelector('#invite-use-signer');
+            createBtn.addEventListener('click', async () => {
+                createBtn.setAttribute('aria-busy', 'true');
+                createBtn.disabled = true;
+                try {
+                    const pubkey = auth.connectGuest();
+                    await proceedConnected(pubkey, null);
+                } catch (e) {
+                    console.error('guest connect failed:', e);
+                    createBtn.removeAttribute('aria-busy');
+                    createBtn.disabled = false;
+                    loginUI.start(); // fall back to the full picker
+                }
+            });
+            signerBtn.addEventListener('click', () => loginUI.start());
+        }
+
+        // Detect the invite from the URL param directly — `parseInviteTokenFromUrl`
+        // (which moves it to sessionStorage and cleans the URL) runs later inside
+        // Alpine's init(), so on first arrival the token lives only in the query.
+        const _pendingInvite = new URLSearchParams(location.search).has('invite_token')
+            || !!sessionStorage.getItem('pendingInviteToken');
+        if (_pendingInvite && !auth.hasSavedSession()) {
+            renderInviteIntro();
+        } else {
+            loginUI.start();
+        }
     </script>
 </body>
 

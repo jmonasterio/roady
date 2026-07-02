@@ -291,6 +291,41 @@ section h3 {
     font-size: 0.95rem;
 }
 
+/* Stable check-in-place rows */
+.check-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.55rem 0.75rem;
+    border-radius: var(--pico-border-radius);
+    border-bottom: 1px solid var(--pico-muted-border-color);
+    cursor: pointer;
+    user-select: none;
+}
+
+.check-row:last-child {
+    border-bottom: none;
+}
+
+.check-row:hover {
+    background: var(--pico-form-element-hover-background-color);
+}
+
+.check-row .check-box {
+    font-size: 1.3rem;
+    line-height: 1;
+}
+
+.check-row .check-name {
+    font-size: 1rem;
+    font-weight: 500;
+}
+
+.check-row.is-checked .check-name {
+    text-decoration: line-through;
+    opacity: 0.5;
+}
+
 /* All loaded message */
 .all-loaded-message {
     background: var(--pico-form-element-background-color);
@@ -528,6 +563,83 @@ main.container {
     display: none !important;
 }
 
+/* Sync status dot (mobile top bar) */
+.sync-dot {
+    display: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--pico-muted-color);
+    flex-shrink: 0;
+}
+
+.sync-dot.sync-paused {
+    background: #2ecc71;
+}
+
+.sync-dot.sync-active {
+    background: #f1c40f;
+}
+
+.sync-dot.sync-error {
+    background: #e74c3c;
+}
+
+/* Bottom tab bar (mobile only) */
+.bottom-nav {
+    display: none;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 950;
+    grid-template-columns: repeat(4, 1fr);
+    background: var(--pico-card-background-color);
+    border-top: 1px solid var(--pico-form-element-border-color);
+    padding-bottom: env(safe-area-inset-bottom);
+}
+
+.bottom-nav button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.2rem;
+    min-height: 52px;
+    margin: 0;
+    padding: 0.4rem 0 0.45rem;
+    background: none;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    color: var(--pico-muted-color);
+    font-size: 0.7rem;
+    line-height: 1;
+}
+
+.bottom-nav button:focus,
+.bottom-nav button:active {
+    box-shadow: none;
+    background: var(--pico-form-element-hover-background-color);
+}
+
+.bottom-nav button.active {
+    color: var(--pico-primary);
+}
+
+/* More view (mobile hub) */
+.more-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.more-list button {
+    width: 100%;
+    margin: 0;
+    text-align: left;
+}
+
 /* Mobile optimizations */
 @media (max-width: 768px) {
 
@@ -581,6 +693,70 @@ main.container {
         overflow-y: auto;
         margin-bottom: 0;
     }
+
+    /* Slim top bar: hide desktop links + user details, show sync dot */
+    .top-nav .nav-links,
+    .top-nav .nav-user-details {
+        display: none !important;
+    }
+
+    .top-nav {
+        padding-top: env(safe-area-inset-top);
+    }
+
+    .top-nav .band-name {
+        display: inline-block;
+        max-width: 45vw;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .sync-dot {
+        display: inline-block;
+    }
+
+    /* Bottom tab bar takes over navigation */
+    .bottom-nav {
+        display: grid;
+    }
+
+    /* Content never hides behind the tab bar */
+    main.container {
+        padding-bottom: calc(4.5rem + env(safe-area-inset-bottom));
+    }
+
+    /* Density: drop view subtitles, tighten headings and sections */
+    hgroup p {
+        display: none;
+    }
+
+    hgroup {
+        margin-bottom: 1rem;
+    }
+
+    h2 {
+        font-size: 1.4rem;
+    }
+
+    section {
+        margin-bottom: 1.5rem;
+    }
+
+    /* Safe-area padding for full-screen surfaces */
+    .overlay-screen,
+    .performance-view {
+        padding-bottom: env(safe-area-inset-bottom);
+    }
+
+    .sticky-footer {
+        padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+    }
+
+    dialog article footer {
+        padding-bottom: calc(var(--pico-spacing, 1rem) + env(safe-area-inset-bottom));
+    }
+
 }
 
 /* PWA-specific: Touch-friendly sizing */
@@ -596,6 +772,11 @@ main.container {
     }
 
     button {
+        min-height: 44px;
+    }
+
+    nav a,
+    .tab-buttons button {
         min-height: 44px;
     }
 }
@@ -704,6 +885,19 @@ main.container {
     font-size: clamp(1.75rem, 5vw, 3rem);
 }
 
+.performance-meta {
+    margin: 0 0 1.5rem 0;
+}
+
+.performance-meta .perf-times {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    opacity: 0.75;
+    font-size: clamp(0.95rem, 2.5vw, 1.15rem);
+    margin-top: 0.25rem;
+}
+
 .performance-section {
     margin-bottom: 1.5rem;
 }
@@ -771,6 +965,11 @@ main.container {
 
     .performance-title {
         font-size: 22pt;
+    }
+
+    .performance-meta .perf-times {
+        font-size: 11pt;
+        opacity: 1;
     }
 
     .performance-section h3 {
