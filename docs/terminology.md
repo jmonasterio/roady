@@ -56,7 +56,7 @@ Individual pieces of gear that need to be transported to gigs.
 ### Equipment Catalog
 The master list of all equipment items available.
 
-**UI Location**: Settings tab → Equipment Catalog section
+**UI Location**: Gear page → Catalog tab
 
 ---
 
@@ -64,6 +64,8 @@ The master list of all equipment items available.
 A reusable template defining which equipment is needed for a specific category of performance.
 
 **Examples**: Small Club, Outdoor Festival, Theater Show, House Party
+
+**UI Location**: Gear page → Gig Types tab
 
 **Database**: `gigTypes` collection with array of equipment IDs
 
@@ -124,6 +126,54 @@ A read-only, large-text, scrollable rendering of a gig's set list for live use o
 
 ---
 
+### Band
+The workspace all data lives in — every equipment item, gig, song, and set list belongs to exactly one band. Technically a **tenant** in MyCouch/couch-sitter.
+
+**ID formats**: internal `tenant_<uuid>` (stored in `_id`); virtual/API format is the bare UUID. Callers convert explicitly — no silent conversion (see AGENTS.md).
+
+**App state**: `userBands`, `currentBandTenantId`, `currentBandName`
+
+---
+
+### Active Band
+The band currently selected on this device. All views show only the active band's data; switching bands reloads everything.
+
+**Persistence**: Dexie meta `active_tenant_id` (no server-side session under MNA1)
+
+---
+
+### Band Role
+Permission level of an account within a band: **owner** (creator; can remove members, claim roster members), **admin** (full access), **member** (can modify).
+
+**UI Location**: Band page → Members tab; role picker in the invite dialog
+
+---
+
+### Roster Member
+A *person* in the band (name + role/instrument, e.g. "Anna · drums"). Exists independently of app accounts — a roster member may have zero, one, or many device keys linked.
+
+**Database**: band member docs (`bandMembers`)
+
+---
+
+### Device Key
+One Nostr keypair with access to the band. Many device keys can map to one roster member (phone + laptop = two keys, one person).
+
+**Invite modes**: **Add a Device** (extra key for an existing member; oldest key drops off past the limit) vs. **Replace Lost Device** (revokes ALL of that member's current keys — only the new device works afterward)
+
+---
+
+### Claiming (Assign Yourself)
+The owner linking their own device key to a roster member ("List yourself as X in the roster"). Owner-only action.
+
+---
+
+### Invitation
+A generated, shareable link granting band access with a chosen role, optionally pre-linked to a roster member. Created via backend API (online-only, token-based — tokens expire); accepted on any device. Includes a pre-filled share message template.
+
+**UI Location**: Band page → Members tab → "+ Invite Member" → "Generate Invite Link"
+
+
 ## Workflow Terms
 
 ### Leaving for Gig / To Gig
@@ -175,10 +225,42 @@ Primary day-to-day interface for creating and managing gig instances.
 
 ---
 
-### Settings (Admin View)
-Administrative interface for managing equipment catalog and gig type templates.
+### Bottom Tab Bar (Mobile)
+Fixed navigation bar on screens ≤768px with four tabs: Gigs · Gear · Music · Band. Replaces the desktop link row on phones.
 
-**Workflow**: Setup and configuration (done occasionally)
+---
+
+### Band Page
+One hub for people and administration, with tabs: **Members** (accounts + roster + invitations), **Info** (band rename, leave/delete band, create another band), **Options** (profile, sign out, sync settings), **Trash**.
+
+---
+
+### Band Switcher
+The band name in the top bar. With one band it's a plain title (tap → Band page); with multiple bands it shows a ▾ chevron and opens a sheet listing bands (checkmark on current, "+ Create band"). Replaces the old Bands page.
+
+---
+
+### Top Bar
+App chrome: band-name switcher on the left (no brand text once a band is loaded), sync status + avatar on the right. Desktop adds the four view links and user details; mobile slims to switcher, **sync dot**, and avatar.
+
+---
+
+### Sync Dot
+Small colored indicator of sync status in the mobile top bar: green = connected (paused), yellow = syncing (active), red = error.
+
+---
+
+### Snackbar
+Transient toast notification for action feedback (e.g. "Switched to The Blue Notes").
+
+
+### Gear Page
+Equipment management: Catalog tab (all items) and Gig Types tab (reusable equipment lists per kind of show).
+
+---
+
+### Music Page
+Song catalog (Songs tab) and reusable set lists (Set Lists tab).
 
 ---
 
@@ -189,7 +271,7 @@ Feature allowing on-the-fly equipment addition while preparing for a gig.
 - Select from existing equipment not in this gig
 - Create new equipment item
 
-**Follow-up**: Prompts to add item to gig type template for future gigs
+**Follow-up**: Prompts to add item to the gig's gig type for future gigs
 
 ---
 
@@ -207,12 +289,78 @@ Completion status shown as "X/Y" (e.g., "3/5" = 3 of 5 items checked)
 
 ---
 
+## Identity & Authentication (Nostr)
+
+### Nostr Identity / npub
+A user is identified by a Nostr public key, displayed as an `npub…` string. Display name and avatar come from the key's Nostr profile. There are no passwords or email accounts.
+
+---
+
+### Signer
+The component holding the private key and producing signatures — the app never sees the key. Kinds:
+
+* **NIP-07 browser extension** – Alby, nos2x, Flamingo (desktop)
+* **NIP-46 remote signer** – a separate signer app reached via relay:
+  * `bunker://` – signer-initiated; user pastes the URI
+  * `nostrconnect://` – client-initiated; shown as QR or deep link (e.g. Amber on Android)
+* **Local dev key** – raw nsec/hex import, development only
+* **Guest mode** – throwaway local identity
+
+---
+
+### MNA1 (MyCouch Nostr Auth v1)
+Per-request signed envelopes replacing token sessions. Every HTTP request carries `Authorization: Nostr <base64(NIP-98 event)>` (kind 27235, with a `payload` body hash when non-empty); WebSocket frames carry envelopes in `hello`/`reauth`. No tokens, no server session.
+
+---
+
+### Signer Offline vs. Signer Denied
+Two distinct failure states:
+
+* **Signer offline** – network/relay outage; dismissible banner, auto-retry with backoff, changes keep saving locally
+* **Signer denied** – identity exists but signing permission was not granted; blocking modal forcing a reconnect that re-requests permissions
+
+---
+
+## Sync & Storage
+
+### MyCouch
+The auth/sync proxy the app talks to for everything (REST + WebSocket). The frontend never talks to CouchDB directly.
+
+---
+
+### couch-sitter
+The tenant registry backend. Band creation registers the tenant there with `applicationId: "roady"` so cascade deletion works.
+
+---
+
+### Outbox
+Queue of local writes not yet acknowledged by the server. Drained in batches (`PUT /:db/:id`); each document row carries a `pending` count of unacked ops.
+
+**Database**: Dexie `outbox` table
+
+---
+
+### Live Changes
+Real-time updates over WebSocket `/:db/_ws` (hello → catchup → change). Falls back to HTTP `GET /changes?since=` polling when the WS can't connect.
+
+---
+
+### Sync Status
+`idle | connecting | active | paused | error` — surfaced as text on desktop ("Not syncing" / "Syncing..." / "Connected" / "Sync Error") and as the sync dot on mobile. Note: **paused means healthy** (connected, nothing to push).
+
+---
+
+### Local-First / Optimistic Update
+Writes land in Dexie immediately and sync in the background — gigs, equipment, songs, checklists all work offline. Exceptions are online-only by design: band creation, invitations, member removal (access control and expiring tokens need immediate server answers).
+
+---
+
 ## Technical Terms
 
-### PouchDB
-Client-side NoSQL database storing all data in browser's IndexedDB.
+### Dexie
+IndexedDB wrapper storing all data client-side: `documents` + `outbox` + `meta` tables per band/remote scope, plus a `roady_options` local-only store (never synced).
 
-**Characteristics**: Schema-less, offline-capable, persistent
+**History**: Replaced PouchDB in the Phase C.9 rewrite (`js/db.js`) with the same DAL surface; PouchDB references elsewhere in the docs are historical.
 
 ---
 
@@ -275,3 +423,7 @@ The app deliberately uses different terminology to avoid confusion, since the fo
 * **FOH** – Front of House (sound engineer position)
 * **IEM** – In-Ear Monitor
 * **DI** – Direct Input
+* **NIP** – Nostr Implementation Possibility (protocol spec, e.g. NIP-07, NIP-46, NIP-98)
+* **MNA1** – MyCouch Nostr Auth v1 (per-request signed envelopes)
+* **WS** – WebSocket
+* **DAL** – Data Access Layer

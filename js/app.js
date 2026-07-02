@@ -1,8 +1,13 @@
 // Alpine.js main application
+// Max device keys retained per roster member. Issuing an Add-device invite
+// beyond this FIFO-evicts the oldest key (revoking its tenant access) so the
+// list can't grow without bound. Tunable.
+const MAX_DEVICES_PER_MEMBER = 5;
 ; document.addEventListener('alpine:init', () => {
     Alpine.data('roady', () => ({
         // State
         currentView: 'gigs',
+        bandTab: 'members', // 'members' | 'info' | 'options' | 'trash'
         equipmentTab: 'catalog', // 'catalog' or 'templates'
         equipment: [],
         gigTypes: [],
@@ -50,6 +55,7 @@
         currentBandTenantId: null,
         currentBandName: '',
         showCreateBandDialog: false,
+        showBandSwitcher: false,
         newBandName: '',
         bandBeingEdited: { name: '' },
         bandNameOriginal: '',
@@ -57,6 +63,7 @@
         bandMembers: [],
         showAddBandMember: false,
         newBandMember: { name: '', role: '' },
+        addMemberAsSelf: false,   // "This is me" toggle in the add-member form
         editingBandMember: null,
         isCreatingBand: false,  // Prevent double submission
         
@@ -71,11 +78,27 @@
         inviteCopied: false,
         messageCopied: false,
 
+        // Invite → roster linkage (Members tab). Assign an invite to an existing
+        // roster person, or create one inline. '__new__' selects inline-create.
+        inviteRosterMemberId: '',
+        inviteNewMemberName: '',
+        inviteNewMemberRole: '',
+        // Invite flow mode: 'new' | 'add' (extra device) | 'replace' (lost device).
+        inviteMode: 'new',
+
         // Authentication state
         isAuthenticated: false,
         nostrAvatarHtml:  '',
         nostrDisplayName: '',
         nostrNpub:        '',
+
+        // Resolved identity helpers. rosterHashMap: raw user_hash → { name, role }
+        // built from the roster's device keys. _hasNostrProfile / _nostrProfile:
+        // whether the active key has a real kind-0 (and its cached profile).
+        // Nav precedence: roster-linked identity → nostr profile → "You".
+        rosterHashMap: {},
+        _hasNostrProfile: false,
+        _nostrProfile: null,
         
         // Retry state — exponential backoff so we don't hammer the remote
         // nostr signer (every reconnect attempt signs an auth event).
@@ -83,6 +106,10 @@
         retryTimer: null,
         retryAttempt: 0,
         signerOffline: false,
+        // Identity restored but the signer refuses to sign (NIP-46 "no
+        // permission"). Distinct from signerOffline (network/relay): this is a
+        // permission grant problem, fixed only by a fresh handshake, not retry.
+        signerDenied: false,
 
         // UI state
         showAddEquipment: false,
@@ -111,10 +138,14 @@
             name: '',
             date: '',
             gigTypeId: '',
-            arrivalTime: '',
-            doorsOpenTime: '',
+            arrivalTime: '18:00',
+            doorsOpenTime: '19:00',
             mapLink: ''
         },
+        // Per-field time snapshot at focus — lets timePmCoerce distinguish a
+        // fresh entry (field was empty; browser defaulted the meridiem to AM)
+        // from a deliberate edit of an existing value.
+        _timeFocusPrev: {},
         newItemForGig: {
             equipmentId: '',
             newEquipmentName: '',
@@ -237,8 +268,18 @@
                         await this.loadData();
                         console.log('✅ Switched to joined band:', tenantId);
                     }
+                    // Bind us (the invitee) to the roster person the inviter tagged
+                    // with this token, once the roster syncs. Best-effort now,
+                    // reconciled on later loadData() calls if not yet synced.
+                    sessionStorage.setItem('pendingRosterLinkToken', token);
+                    await this._linkRosterOnAccept(token);
                     
-                    this.showSnackbar('Successfully joined the band!');
+                    // Guest keys live only in this browser — orient the user
+                    // toward Add-Device invites instead of silent device-lock.
+                    const _acctType = window.Auth?._auth?.getActiveAccount?.()?.type;
+                    this.showSnackbar(_acctType === 'guest'
+                        ? 'Joined! Your key lives in this browser — ask a band admin for an "Add device" invite to use another device.'
+                        : 'Successfully joined the band!');
                     return true;
                 } else if (response.status === 404) {
                     console.warn('⚠️ Invitation token not found or expired');
@@ -349,7 +390,7 @@
                 if (this._isAuthDenied(e)) {
                     // Permanent until the user grants signing access — don't
                     // poll the signer (it just re-prompts / rate-limits).
-                    this.signerOffline = true;
+                    this.signerDenied = true;
                     console.warn('🚫 Signer denied permission. Grant signing access in your signer app, then Reconnect.');
                 } else {
                     console.warn('⚠️ Continuing in offline mode - MyCouch may be unavailable');
@@ -383,9 +424,6 @@
                 DB.setTenant(this.currentBandTenantId);
             }
 
-            // Load current band details
-            await this.loadBandDetails();
-
             // 5. Setup Sync before first render so the listener is attached
             //    before any change event can fire, and sync has a head start.
             this.setupSyncListeners();
@@ -396,29 +434,90 @@
             // Initial render from local PouchDB (may be empty on new browser;
             // db-sync-change will reload once remote data arrives).
             await this.loadData();
-            
-            // CRITICAL: Accept pending invitation if one exists
-            // This must happen AFTER nostr auth, tenant init, and options loading
+
+            // First paint now. The band name is already set by loadBands(); the
+            // band-details + members fetch below hits the API and can take tens
+            // of seconds on a slow proxy, so it must NOT gate startup.
+            this.isLoading = false;
+
+            // Refresh band details + members in the background (members are only
+            // shown on the Settings screen).
+            this.loadBandDetails();
+
+            // Accept a pending invitation if one exists (rare; runs after paint).
             const pendingToken = this.checkPendingInvitation();
             if (pendingToken) {
                 console.log('📣 Processing pending invitation acceptance...');
                 await this.acceptPendingInvitation(pendingToken);
             }
-            
-            this.isLoading = false;
 
         },
 
         _updateNavProfile(pubkey, profile) {
             if (!pubkey) return;
             const npub = window.encodeNpub ? window.encodeNpub(pubkey) : pubkey;
-            this.nostrNpub        = npub;
-            this.nostrDisplayName = window.nuiDisplayName
-                ? window.nuiDisplayName(profile, npub)
-                : npub.slice(0, 20) + '\u2026';
-            this.nostrAvatarHtml  = window.nuiAvatarHtml
-                ? window.nuiAvatarHtml(profile, pubkey, 28)
-                : '';
+            this.nostrNpub = npub;
+            this._nostrProfile = profile || null;
+            this._hasNostrProfile = !!(profile && (profile.display_name || profile.name));
+            this._applyNavIdentity();
+        },
+
+        // Nav identity precedence: if the active key is linked to a roster
+        // member, the in-band identity wins — roster name (· role) with a
+        // letter avatar (deliberately no nostr picture). Else the nostr
+        // kind-0 profile, else a friendly "You". Never a raw npub.
+        _applyNavIdentity() {
+            const pk = window.Auth?.getPubkey?.();
+            const mine = pk ? this.bandMembers.find(m => this.memberPubkeys(m).includes(pk)) : null;
+            if (mine) {
+                this.nostrDisplayName = mine.name + (mine.role ? ' · ' + mine.role : '');
+                this.nostrAvatarHtml = window.nuiAvatarHtml ? window.nuiAvatarHtml({ name: mine.name }, pk, 28) : '';
+                // Guest keys have no kind-0, so the login card would label the
+                // recent-connection row "Guest Mode". Seed the library's profile
+                // cache with the roster identity so the card (and connected
+                // header) shows "Name · Role" instead. Real kind-0 profiles are
+                // never overwritten (guarded), and the 24h TTL self-heals if the
+                // roster link is later removed.
+                if (!this._hasNostrProfile) {
+                    try { window.setCachedProfile?.(pk, { name: this.nostrDisplayName }); } catch (_) {}
+                }
+            } else if (this._hasNostrProfile) {
+                this.nostrDisplayName = window.nuiDisplayName
+                    ? window.nuiDisplayName(this._nostrProfile, this.nostrNpub)
+                    : this.nostrNpub.slice(0, 20) + '\u2026';
+                this.nostrAvatarHtml = window.nuiAvatarHtml ? window.nuiAvatarHtml(this._nostrProfile, pk, 28) : '';
+            } else {
+                this.nostrDisplayName = 'You';
+                this.nostrAvatarHtml = window.nuiAvatarHtml ? window.nuiAvatarHtml(null, pk, 28) : '';
+            }
+        },
+
+        // Map raw user_hash → roster { name, role } by hashing each roster
+        // member's device keys. Powers name resolution in the Members list.
+        async _rebuildRosterHashMap() {
+            const map = {};
+            for (const m of this.bandMembers) {
+                for (const pk of this.memberPubkeys(m)) {
+                    try { map[await window.Auth.hashPubkey(pk)] = { name: m.name, role: m.role }; }
+                    catch (_) {}
+                }
+            }
+            this.rosterHashMap = map;
+            // The roster may have just resolved (or changed) our own identity.
+            this._applyNavIdentity();
+        },
+
+        // Display name for a tenant-member row: roster name → (self) profile/You
+        // → hex stub. Keeps the founder/owner — who has no roster entry — from
+        // showing raw hex; they see their profile name or "You".
+        tenantMemberName(m) {
+            const r = this.rosterHashMap[m.userHash];
+            if (r && r.name) return r.name;
+            const me = window.tenantManager?.currentUserHash;
+            if (me && m.userHash === me) {
+                return (this._hasNostrProfile && this.nostrDisplayName) ? this.nostrDisplayName : 'You';
+            }
+            return m.name || 'Unknown';
         },
 
         // Reconnect with exponential backoff. CRITICAL: every attempt calls
@@ -429,9 +528,29 @@
         startBackgroundRetry() {
             if (this.isRetrying) return; // already scheduled
             this.isRetrying = true;
-            this.signerOffline = false;
             this.retryAttempt = 0;
             this._scheduleRetry();
+        },
+
+        // A signing/authed call failed mid-session (sync push, member load, …).
+        // Reflect the disconnected state so the user knows writes aren't syncing,
+        // and recover automatically. A permission denial is terminal (needs a
+        // fresh handshake); anything else is transient → banner + backoff retry.
+        _handleSignerError(err) {
+            if (this._isAuthDenied(err)) {
+                this._stopRetry();
+                this.signerOffline = false;
+                this.signerDenied = true;
+                return;
+            }
+            // Already surfaced — the sync drain keeps probing at a backoff and
+            // clears the state via db-sync-online. Re-arming the tenant-init
+            // retry loop here would probe the signer forever (rate limits).
+            if (this.signerOffline || this.isRetrying) return;
+            this.signerOffline = true;
+            // Covers the empty-outbox case, where no drain probe would ever
+            // fire db-sync-online after the signer recovers.
+            this.startBackgroundRetry();
         },
 
         _scheduleRetry() {
@@ -465,7 +584,7 @@
                 console.log('⏳ Reconnect failed:', error.message);
                 if (this._isAuthDenied(error)) {
                     this._stopRetry();
-                    this.signerOffline = true;
+                    this.signerDenied = true;
                     console.warn('🚫 Signer denied permission. Grant signing access in your signer app, then Reconnect.');
                     return;
                 }
@@ -494,11 +613,26 @@
             this.startBackgroundRetry();
         },
 
+        // Fresh NIP-46 handshake for a permission denial. A plain reconnect()
+        // reuses the stored ephemeral key; if the signer granted it with no
+        // signing perms, every sign keeps failing. Clearing the session forces
+        // the login flow to run again with a NEW key, whose connect URI requests
+        // sign_event perms, so the signer re-prompts for approval.
+        reauthorize() {
+            this._stopRetry();
+            try { window.Auth.logout(); } catch (_) {}
+            location.reload();
+        },
+
         async loadData() {
             this.equipment = await DB.getAllEquipment();
             this.gigTypes = await DB.getAllGigTypes();
             this.gigs = await DB.getAllGigs();
             this.bandMembers = await DB.getAllBandMembers();
+            await this._rebuildRosterHashMap();
+            // Reconcile a pending roster link (invitee side) once the roster syncs.
+            const _rosterLinkToken = sessionStorage.getItem('pendingRosterLinkToken');
+            if (_rosterLinkToken) await this._linkRosterOnAccept(_rosterLinkToken);
             this.songs = await DB.getAllSongs();
             this.setlistTemplates = await DB.getAllSetlistTemplates();
         },
@@ -783,12 +917,27 @@
             });
 
             window.addEventListener('db-sync-error', (e) => {
-                this.syncError = `Sync error: ${e.detail.error.message || 'Unknown error'}`;
+                this.syncError = `Sync error: ${e.detail?.error?.message || e.detail?.code || 'Unknown error'}`;
                 this.syncStatus = window.Sync ? Sync.getSyncStatus() : 'idle';
             });
 
             window.addEventListener('db-sync-paused', (e) => {
                 this.syncStatus = window.Sync ? Sync.getSyncStatus() : 'idle';
+            });
+
+            // Mid-session signing/network failure during a sync push — surface
+            // the offline state (banner + auto-retry) instead of silently
+            // stalling the outbox.
+            window.addEventListener('db-sync-offline', (e) => {
+                this._handleSignerError(e.detail?.error || new Error('sync unavailable'));
+            });
+
+            // A push succeeded — signing works again; clear the offline state.
+            window.addEventListener('db-sync-online', () => {
+                if (this.signerOffline || this.isRetrying) {
+                    this._stopRetry();
+                    this.signerOffline = false;
+                }
             });
         },
 
@@ -966,8 +1115,8 @@
 
         async deleteGigType(id) {
             const confirmed = await this.showConfirmation(
-                'Delete Template',
-                'Delete this template? Existing gigs will keep their current equipment list.',
+                'Delete Gig Type',
+                'Delete this gig type? Existing gigs will keep their current equipment list.',
                 'Delete',
                 true
             );
@@ -980,7 +1129,7 @@
 
                 // Show snackbar with undo
                 this.showSnackbar(
-                    `Deleted template "${gigType?.name || 'Template'}"`,
+                    `Deleted gig type "${gigType?.name || 'Gig type'}"`,
                     async () => {
                         await DB.restoreGigType(id);
                         await this.loadData();
@@ -1013,7 +1162,19 @@
         // Gig methods
         async saveGig() {
             if (!this.newGig.name.trim() || !this.newGig.date || !this.newGig.gigTypeId) {
-                alert('Please fill in Name, Date, and Template');
+                alert('Please fill in Name, Date, and Gig Type');
+                return;
+            }
+
+            // A partially-filled <input type="time"> (e.g. hour+minute typed but
+            // AM/PM segment untouched) reports value="" — it would silently save
+            // blank. Surface it instead of losing the user's input.
+            if (this.$refs.arrivalTimeInput?.validity?.badInput) {
+                alert('Arrival Time is incomplete — set AM/PM (or clear the field).');
+                return;
+            }
+            if (this.$refs.doorsTimeInput?.validity?.badInput) {
+                alert('Doors Open time is incomplete — set AM/PM (or clear the field).');
                 return;
             }
 
@@ -1025,9 +1186,9 @@
                     // Check if there's checklist progress
                     if (this.gigHasChecklistProgress(this.editingGig)) {
                         const confirmed = await this.showConfirmation(
-                            'Change Template?',
-                            'Changing the template will reset all checklist progress. Are you sure you want to continue?',
-                            'Change Template',
+                            'Change Gig Type?',
+                            'Changing the gig type will reset all checklist progress. Are you sure you want to continue?',
+                            'Change Gig Type',
                             true
                         );
 
@@ -1092,8 +1253,11 @@
                 name: gig.name,
                 date: gig.date,
                 gigTypeId: gig.gigTypeId,
-                arrivalTime: gig.arrivalTime || '',
-                doorsOpenTime: gig.doorsOpenTime || '',
+                // Default empty times so the AM/PM segment is pre-filled — a
+                // blank native time input silently reports "" until every
+                // segment (incl. AM/PM) is set.
+                arrivalTime: gig.arrivalTime || '18:00',
+                doorsOpenTime: gig.doorsOpenTime || '19:00',
                 mapLink: gig.mapLink || ''
             };
         },
@@ -1159,8 +1323,26 @@
             }
         },
 
+        // Band-friendly time entry: a time typed into an EMPTY field landing in
+        // 1:00–11:59 got "AM" only because that's the browser default — gigs are
+        // in the evening, so coerce to PM. Deliberate edits of an existing value
+        // (including flipping to AM) are respected. 12:xx and existing values
+        // pass through untouched.
+        timeFocus(field) {
+            this._timeFocusPrev[field] = this.newGig[field] || '';
+        },
+        timePmCoerce(field) {
+            const prev = this._timeFocusPrev[field] || '';
+            const v = this.newGig[field];
+            if (prev || !v) return; // only coerce fresh entries
+            const [h, m] = v.split(':').map(Number);
+            if (Number.isInteger(h) && h >= 1 && h <= 11) {
+                this.newGig[field] = `${String(h + 12).padStart(2, '0')}:${String(m || 0).padStart(2, '0')}`;
+            }
+        },
+
         resetNewGig() {
-            this.newGig = { name: '', date: '', gigTypeId: '', arrivalTime: '', doorsOpenTime: '', mapLink: '' };
+            this.newGig = { name: '', date: '', gigTypeId: '', arrivalTime: '18:00', doorsOpenTime: '19:00', mapLink: '' };
         },
 
         async viewGigDetail(gigId, mode) {
@@ -1449,7 +1631,7 @@
             // If no templates exist, create a default template
             if (this.gigTypes.length === 0) {
                 const defaultTemplate = {
-                    name: 'Default Template',
+                    name: 'Default',
                     equipment: []
                 };
                 DB.addGigType(defaultTemplate).then(async () => {
@@ -1645,8 +1827,8 @@
         },
         async deleteSetlistTemplate(id) {
             const confirmed = await this.showConfirmation(
-                'Delete Set List Template',
-                'Delete this template? Gigs already using a copy are unaffected.',
+                'Delete Set List',
+                'Delete this set list? Gigs already using a copy are unaffected.',
                 'Delete',
                 true
             );
@@ -1672,7 +1854,7 @@
             if (!doc) return;
             if (this.editingSetlistKind === 'template') {
                 if (!(doc.name || '').trim()) {
-                    this.showSnackbar('Template name is required', 'error');
+                    this.showSnackbar('Set list name is required', 'error');
                     return;
                 }
                 if (doc._id) await DB.updateSetlistTemplate(doc);
@@ -1813,20 +1995,20 @@
             const src = this.editingSetlist || this.gigSetlist;
             if (!src || !src.sourceTemplateId) return;
             const confirmed = await this.showConfirmation(
-                'Update Source Template',
-                'Overwrite the source template with this set list? This affects future gigs created from the template.',
-                'Update Template',
+                'Update Source Set List',
+                'Overwrite the source set list with this one? This affects future gigs created from it.',
+                'Update',
                 true
             );
             if (!confirmed) return;
             const tpl = this.setlistTemplates.find(t => t._id === src.sourceTemplateId);
             if (!tpl) {
-                this.showSnackbar('Source template no longer exists', 'error');
+                this.showSnackbar('Source set list no longer exists', 'error');
                 return;
             }
             await DB.updateSetlistTemplate({ ...tpl, sections: src.sections });
             await this.loadData();
-            this.showSnackbar('Source template updated');
+            this.showSnackbar('Source set list updated');
         },
 
         // --- Performance (live) view + print ---
@@ -2118,13 +2300,16 @@
                 // longer stored — under MNA1 the only identity is the pubkey.
                 this.currentBandMembers = members.map(m => ({
                     userId: `user_${m.user_hash}`,
+                    userHash: m.user_hash,
                     name: `${m.user_hash.slice(0, 8)}…`,
                     role: m.role,
                     joinedAt: m.joined_at,
                 }));
+                await this._rebuildRosterHashMap();
                 console.log(`✅ Band members loaded (${this.currentBandMembers.length}):`, this.currentBandMembers);
             } catch (e) {
                 console.error('❌ loadBandMembers failed:', e);
+                this._handleSignerError(e);
             }
         },
 
@@ -2155,6 +2340,81 @@
 
             // Fallback: check band.role (from user.tenants)
             return currentBand.role || 'member';
+        },
+
+        // ── Roster ↔ device-key helpers (many keys → one roster member) ──────
+        // `pubkeys[]` is ordered oldest-first; legacy docs carry a singular
+        // `pubkey`. These normalize both. A copy is returned so callers can
+        // mutate freely before persisting.
+        memberPubkeys(m) {
+            if (!m) return [];
+            if (Array.isArray(m.pubkeys)) return m.pubkeys.slice();
+            return m.pubkey ? [m.pubkey] : [];
+        },
+        memberIsLinked(m) {
+            return this.memberPubkeys(m).length > 0;
+        },
+        memberDeviceCount(m) {
+            return this.memberPubkeys(m).length;
+        },
+
+        // Revoke tenant membership for a roster member's device keys and prune
+        // them from the roster doc. `opts.oldest = N` evicts the N oldest (FIFO
+        // cap); omitting it evicts ALL (replace / remove-from-band). Best-effort
+        // per key — a key we lack permission to revoke is reported, not fatal.
+        async _evictMemberKeys(member, opts = {}) {
+            const tenantId = this.currentBandTenantId;
+            const keys = this.memberPubkeys(member);
+            const toEvict = opts.oldest != null
+                ? keys.slice(0, Math.max(0, opts.oldest))
+                : keys.slice();
+            if (toEvict.length === 0) return;
+            const failed = [];
+            for (const pk of toEvict) {
+                try {
+                    const hash = await window.Auth.hashPubkey(pk);
+                    await window.tenantManager.removeMemberByHash(tenantId, hash);
+                } catch (e) {
+                    console.warn('evict key failed:', (pk || '').slice(0, 8), e.message);
+                    failed.push(pk);
+                }
+            }
+            const evicted = new Set(toEvict.filter(pk => !failed.includes(pk)));
+            const remaining = keys.filter(pk => !evicted.has(pk));
+            const doc = this.bandMembers.find(m => m._id === member._id) || member;
+            doc.pubkeys = remaining;
+            if (remaining.length === 0) { delete doc.linkedAt; delete doc.pubkey; }
+            try {
+                await DB.updateBandMember(doc);
+                this.bandMembers = await DB.getAllBandMembers();
+            } catch (e) { console.warn('persist after evict failed:', e.message); }
+            if (failed.length) {
+                this.showSnackbar(`Could not revoke ${failed.length} device(s) — check you're an admin`, 'error');
+            }
+        },
+
+        // Open the invite dialog to add another device for an already-linked
+        // roster member (additive — existing devices keep working).
+        openAddDeviceDialog(member) {
+            this.inviteMode = 'add';
+            this.inviteMemberEmail = '';
+            this.inviteMemberRole = 'member';
+            this.inviteRosterMemberId = member?._id || '';
+            this.inviteNewMemberName = '';
+            this.inviteNewMemberRole = '';
+            this.showInviteMemberDialog = true;
+        },
+
+        // Open the invite dialog to replace a lost device — generating the
+        // invite revokes ALL of this member's current keys first.
+        openReplaceDeviceDialog(member) {
+            this.inviteMode = 'replace';
+            this.inviteMemberEmail = '';
+            this.inviteMemberRole = 'member';
+            this.inviteRosterMemberId = member?._id || '';
+            this.inviteNewMemberName = '';
+            this.inviteNewMemberRole = '';
+            this.showInviteMemberDialog = true;
         },
 
         cancelBandEdit() {
@@ -2210,10 +2470,17 @@
                 return;
             }
             try {
-                await DB.addBandMember(this.newBandMember);
+                const asSelf = this.addMemberAsSelf && this.getCurrentUserRole() === 'owner';
+                const created = await DB.addBandMember(this.newBandMember);
                 this.newBandMember = { name: '', role: '' };
+                this.addMemberAsSelf = false;
                 this.showAddBandMember = false;
                 this.bandMembers = await DB.getAllBandMembers();
+                if (asSelf && created?.id) {
+                    const rm = this.bandMembers.find(m => m._id === created.id);
+                    if (rm) await this.claimRosterMember(rm);
+                }
+                await this._rebuildRosterHashMap();
             } catch (e) {
                 console.error('Error adding band member:', e);
                 this.showSnackbar('Error adding member', 'error');
@@ -2222,6 +2489,45 @@
 
         startEditBandMember(member) {
             this.editingBandMember = { ...member };
+        },
+
+        // Bind the current user's key to a roster entry (owner-only). Lets the
+        // band creator — who never went through an invite — mark which roster
+        // person is them. Same append as _linkRosterOnAccept, no invite token.
+        async claimRosterMember(member) {
+            if (this.getCurrentUserRole() !== 'owner') {
+                this.showSnackbar('Only the band owner can assign themselves', 'error');
+                return;
+            }
+            const myPubkey = window.Auth.getPubkey();
+            if (!myPubkey) return;
+            const target = this.bandMembers.find(m => m._id === member._id);
+            if (!target) return;
+            const keys = this.memberPubkeys(target);
+            if (keys.includes(myPubkey)) { this.showSnackbar(`You're already ${target.name}`); return; }
+            keys.push(myPubkey);
+            target.pubkeys = keys;
+            delete target.pubkey;
+            if (!target.linkedAt) target.linkedAt = new Date().toISOString();
+            try {
+                await DB.updateBandMember(target);
+                this.bandMembers = await DB.getAllBandMembers();
+                await this._rebuildRosterHashMap();
+                this.showSnackbar(`You're now listed as ${target.name}`);
+            } catch (e) {
+                console.error('claim roster failed:', e);
+                this.showSnackbar('Could not assign you to the roster', 'error');
+            }
+        },
+
+        async confirmClaimRosterMember(member) {
+            const ok = await this.showConfirmation(
+                'Assign yourself',
+                `List yourself as “${member.name}”${member.role ? ' · ' + member.role : ''} in the roster?`,
+                'Yes, that\u2019s me',
+                false,
+            );
+            if (ok) await this.claimRosterMember(member);
         },
 
         cancelEditBandMember() {
@@ -2244,14 +2550,20 @@
         },
 
         async deleteBandMember(member) {
+            const linked = this.memberIsLinked(member);
             const confirmed = await this.showConfirmation(
                 'Remove Member',
-                `Remove ${member.name} from the band roster?`,
+                linked
+                    ? `Remove ${member.name} from the band? This revokes all their device keys and deletes their roster entry.`
+                    : `Remove ${member.name} from the band roster?`,
                 'Remove',
                 true
             );
             if (!confirmed) return;
             try {
+                // Revoke tenant access for every device key before deleting the
+                // roster entry — otherwise their keys stay authorized. Needs admin.
+                if (linked) await this._evictMemberKeys(member);
                 await DB.deleteBandMember(member._id);
                 this.bandMembers = await DB.getAllBandMembers();
             } catch (e) {
@@ -2261,49 +2573,110 @@
         },
 
         openInviteMemberDialog() {
+            this.inviteMode = 'new';
             this.inviteMemberEmail = '';
             this.inviteMemberRole = 'member';
+            this.inviteRosterMemberId = '';
+            this.inviteNewMemberName = '';
+            this.inviteNewMemberRole = '';
             this.showInviteMemberDialog = true;
         },
 
         async inviteMember() {
-             // Email is optional (just for reference)
-             try {
+            try {
+                // Resolve the roster member to link this invite to, creating one
+                // inline when the user chose "＋ Create new roster member".
+                let inviteRosterId = this.inviteRosterMemberId;
+                if (inviteRosterId === '__new__') {
+                    const nm = this.inviteNewMemberName.trim();
+                    if (!nm) { this.showSnackbar('Enter a name for the new roster member', 'error'); return; }
+                    const created = await DB.addBandMember({ name: nm, role: this.inviteNewMemberRole || '' });
+                    inviteRosterId = created?.id || null;
+                    this.bandMembers = await DB.getAllBandMembers();
+                }
+
+                const mode = this.inviteMode || 'new';
+                let rm = inviteRosterId ? this.bandMembers.find(m => m._id === inviteRosterId) : null;
+
+                // Replace a lost device: revoke ALL current keys first so the new
+                // key becomes this person's sole device.
+                if (mode === 'replace' && rm) {
+                    await this._evictMemberKeys(rm);
+                    rm = this.bandMembers.find(m => m._id === inviteRosterId) || rm;
+                }
+                // Add a device: enforce the FIFO cap. Accept appends one, so make
+                // room for exactly one over the limit.
+                else if (mode === 'add' && rm) {
+                    const overflow = this.memberPubkeys(rm).length - (MAX_DEVICES_PER_MEMBER - 1);
+                    if (overflow > 0) {
+                        await this._evictMemberKeys(rm, { oldest: overflow });
+                        rm = this.bandMembers.find(m => m._id === inviteRosterId) || rm;
+                    }
+                }
+
                 // Route through TenantManager so the request uses the resolved
-                // /__api__ base. Building from raw options.mycouchBaseUrl ('')
-                // hits same-origin /api/... and 405s past the proxy.
+                // /__api__ base (raw options.mycouchBaseUrl '' would 405).
                 const invitationData = await window.tenantManager.createInvitation(
                     this.currentBandTenantId,
                     { role: this.inviteMemberRole, email: this.inviteMemberEmail },
                 );
-                console.log('✅ Invitation created:', invitationData);
 
-                // Generate shareable link with token
                 const inviteToken = invitationData.token || invitationData.id;
                 const appBaseUrl = window.location.origin;
                 this.generatedInviteLink = `${appBaseUrl}?invite_token=${inviteToken}`;
                 this.generatedInviteToken = inviteToken;
-                
-                // Create message template
+
+                // Tag the roster member with this pending invite so accepting the
+                // link binds the invitee's key to this roster person.
+                if (rm) {
+                    rm.pendingInviteToken = inviteToken;
+                    if (this.inviteMemberEmail?.trim()) rm.email = this.inviteMemberEmail.trim();
+                    try {
+                        await DB.updateBandMember(rm);
+                        this.bandMembers = await DB.getAllBandMembers();
+                    } catch (e) { console.warn('Failed to tag roster member with invite:', e.message); }
+                }
+
                 const bandName = this.currentBandName || 'my band';
                 this.inviteMessageTemplate = `Join my band on Roady!\n\n${this.generatedInviteLink}\n\nClick the link above to accept the invitation and start collaborating with ${bandName}.`;
-                
-                // Show link sharing dialog
+
                 this.showInviteMemberDialog = false;
                 this.showGeneratedInviteLink = true;
-                
-                console.log('✅ Invitation link generated');
             } catch (e) {
                 console.error('Error inviting member:', e);
-                // Distinguish network errors from server errors
                 if (e instanceof TypeError) {
-                    // Network error (no connection, CORS, etc)
-                    console.error('Network error - cannot reach server');
                     this.showSnackbar('Cannot reach server. Please check your internet connection.', 'error');
                 } else {
-                    // HTTP error or other
                     this.showSnackbar('Error generating invitation: ' + e.message, 'error');
                 }
+            }
+        },
+
+        // Bind the accepting user (us) to the roster person the inviter tagged
+        // with this invite token. Best-effort: the band_member doc syncs after we
+        // join, so if it isn't local yet this no-ops and loadData() retries later.
+        async _linkRosterOnAccept(token) {
+            if (!token) return;
+            try {
+                const myPubkey = window.Auth.getPubkey();
+                if (!myPubkey) return;
+                const members = await DB.getAllBandMembers();
+                const target = members.find(m => m.pendingInviteToken === token);
+                if (!target) return; // roster doc not synced to us yet
+                // Append our key to this roster person's device list (ordered
+                // oldest-first). Many keys → one roster identity/role.
+                const keys = this.memberPubkeys(target);
+                if (!keys.includes(myPubkey)) keys.push(myPubkey);
+                target.pubkeys = keys;
+                delete target.pubkey; // migrate legacy singular
+                if (!target.linkedAt) target.linkedAt = new Date().toISOString();
+                delete target.pendingInviteToken;
+                await DB.updateBandMember(target);
+                this.bandMembers = await DB.getAllBandMembers();
+                sessionStorage.removeItem('pendingRosterLinkToken');
+                console.log('🔗 Linked to roster member:', target.name);
+            } catch (e) {
+                console.warn('roster link on accept failed:', e.message);
             }
         },
 
@@ -2344,7 +2717,7 @@
         },
 
         async confirmRemoveMember(member) {
-            const memberEmail = member.email || member.name || 'Unknown User';
+            const memberEmail = this.tenantMemberName(member);
             const confirmed = await this.showConfirmation(
                 'Remove Member',
                 `Are you sure you want to remove ${memberEmail} from ${this.currentBandName}?`,
@@ -2358,46 +2731,24 @@
         },
 
         async removeMember(member) {
-             try {
-                 const tenantId = this.currentBandTenantId.startsWith('tenant_')
-                     ? this.currentBandTenantId
-                     : `tenant_${this.currentBandTenantId}`;
-                 const userId = member.userId;
-                 const baseUrl = this.options.mycouchBaseUrl.replace(/\/$/, '');
-                 const response = await window.Auth.fetchWithAuth(
-                    `${baseUrl}/api/tenants/${tenantId}/members/${userId}`,
-                    { method: 'DELETE' },
+            try {
+                // `userHash` is the raw hash; older shapes only had a `user_`-
+                // prefixed `userId`. removeMemberByHash strips either.
+                const hash = member.userHash || member.userId;
+                await window.tenantManager.removeMemberByHash(this.currentBandTenantId, hash);
+                this.currentBandMembers = this.currentBandMembers.filter(
+                    m => (m.userHash || m.userId) !== hash,
                 );
-
-                if (!response.ok) {
-                    if (response.status === 403) {
-                        this.showSnackbar('You do not have permission to remove members', 'error');
-                    } else {
-                        const error = await response.json();
-                        throw new Error(error.detail || 'Failed to remove member');
-                    }
-                    return;
-                }
-
-                // Remove from local list
-                this.currentBandMembers = this.currentBandMembers.filter(m => m.userId !== userId);
-
-                const memberEmail = member.email || member.name || 'Unknown User';
-                this.showSnackbar(`Removed ${memberEmail} from the band`);
-                console.log('✅ Member removed:', userId);
-
-                // Reload band details to sync
+                this.showSnackbar(`Removed ${this.tenantMemberName(member)} from the band`);
                 await this.loadBandMembers();
             } catch (e) {
                 console.error('Error removing member:', e);
-                // Distinguish network errors from server errors
                 if (e instanceof TypeError) {
-                    // Network error (no connection, CORS, etc)
-                    console.error('Network error - cannot reach server');
                     this.showSnackbar('Cannot reach server. Please check your internet connection.', 'error');
+                } else if (/\b403\b/.test(e.message || '')) {
+                    this.showSnackbar('You do not have permission to remove members', 'error');
                 } else {
-                    // HTTP error or other
-                    this.showSnackbar('Error removing member: ' + e.message, 'error');
+                    this.showSnackbar('Error removing member: ' + (e.message || e), 'error');
                 }
             }
         },
@@ -2461,25 +2812,6 @@
                 } else {
                     this.showSnackbar('Error leaving band: ' + e.message, 'error');
                 }
-            }
-        },
-
-        async openDeleteBandConfirmationForBand(band) {
-            // Get the band name directly from the band object passed to us
-            const bandNameToDelete = band.bandName || 'Unknown Band';
-            
-            // Set the band to delete (use _id from virtual endpoint)
-            this.currentBandTenantId = band._id || band.tenantId;
-            
-            const confirmed = await this.showConfirmation(
-                'Delete Band',
-                `Are you sure you want to delete "${bandNameToDelete}"? This will permanently delete all equipment and gigs in this band. This action cannot be undone.`,
-                'Delete Band',
-                true
-            );
-            
-            if (confirmed) {
-                await this.deleteBand();
             }
         },
 
