@@ -1430,6 +1430,25 @@ const MAX_DEVICES_PER_MEMBER = 5;
             this.selectedGig = await DB.getGig(this.selectedGigId);
         },
 
+        // Percent of brought items packed back — denominator is what was
+        // actually taken to the gig, so 100% is reachable even if gear was
+        // left home. Guards divide-by-zero when nothing was brought.
+        broughtProgressPct(gig) {
+            const b = this.getItemsBrought(gig);
+            return b.length ? (b.filter(i => i.checked).length / b.length * 100).toFixed(0) : 0;
+        },
+
+        // Escape hatch for the "brought it but forgot to tick To Gig" mistake:
+        // flip the load-out flag so the item joins the pack-back list. Load-in
+        // stays unchecked — the user still ticks it once actually packed.
+        async markBroughtAnyway(index) {
+            if (!this.selectedGig) return;
+            this.selectedGig.loadoutChecklist[index].checked = true;
+            await DB.updateGig(this.selectedGig);
+            await this.loadData();
+            this.selectedGig = await DB.getGig(this.selectedGigId);
+        },
+
         getItemsBrought(gig) {
             if (!gig) return [];
             return gig.loadinChecklist

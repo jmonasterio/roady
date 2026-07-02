@@ -20,14 +20,14 @@
 
     <!-- Stylesheets -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-    <link rel="stylesheet" href="css/styles.css?v=20260702e">
+    <link rel="stylesheet" href="css/styles.css?v=20260702g">
     <script src="https://cdn.jsdelivr.net/npm/dexie@4.0.10/dist/dexie.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <script src="js/auth.js?v=20260702e"></script>
     <script src="js/sync.js?v=20260702e"></script>
     <script src="js/db.js?v=20260702e"></script>
     <script src="js/tenant-manager.js?v=20260702e"></script>
-    <script src="js/app.js?v=20260702f"></script>
+    <script src="js/app.js?v=20260702g"></script>
 
 
     <!-- Service Worker Registration -->
@@ -429,30 +429,45 @@
 
                             <template x-if="selectedGig">
                                 <div>
-                                    <!-- Progress bar -->
+                                    <!-- Progress: only items actually brought to the gig -->
                                     <div class="checklist-progress">
                                         <div class="progress-text">
-                                            <span x-text="getChecklistProgress(selectedGig.loadinChecklist)"></span>
+                                            <span x-text="getChecklistProgress(getItemsBrought(selectedGig))"></span>
                                             packed
                                         </div>
                                         <div class="progress-bar">
                                             <div class="progress-bar-fill"
-                                                :style="`width: ${(selectedGig.loadinChecklist.filter(i => i.checked).length / selectedGig.loadinChecklist.length * 100).toFixed(0)}%`">
+                                                :style="`width: ${broughtProgressPct(selectedGig)}%`">
                                             </div>
                                         </div>
                                     </div>
 
-                                    <!-- Stable checklist: tap toggles in place -->
+                                    <!-- Bring back = what you took to the gig -->
                                     <div class="checklist">
-                                        <template x-for="(item, index) in selectedGig.loadinChecklist" :key="index">
+                                        <template x-for="item in getItemsBrought(selectedGig)" :key="item.originalIndex">
                                             <div class="check-row" :class="{ 'is-checked': item.checked }"
-                                                @click="toggleLoadinItem(index)">
+                                                @click="toggleLoadinItem(item.originalIndex)">
                                                 <div class="check-box" x-text="item.checked ? '✅' : '⬜'"></div>
                                                 <div class="check-name"
                                                     x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></div>
                                             </div>
                                         </template>
+                                        <p x-show="getItemsBrought(selectedGig).length === 0" class="text-muted"
+                                            style="text-align: center; padding: 1rem 0;">Nothing was marked as brought to this gig.</p>
                                     </div>
+
+                                    <!-- Didn't bring: kept out of the pack-back list, recoverable if it was a mistake -->
+                                    <details x-show="getItemsNotBrought(selectedGig).length > 0" class="didnt-bring">
+                                        <summary x-text="`Didn't bring (${getItemsNotBrought(selectedGig).length})`"></summary>
+                                        <template x-for="item in getItemsNotBrought(selectedGig)" :key="item.originalIndex">
+                                            <div class="didnt-bring-row">
+                                                <span class="check-name text-muted"
+                                                    x-text="getEquipmentName(item.equipmentId, item.itemNumber)"></span>
+                                                <button class="secondary outline" @click="markBroughtAnyway(item.originalIndex)"
+                                                    style="margin: 0; white-space: nowrap; padding: 0.25rem 0.6rem; font-size: 0.8rem;">Brought it anyway</button>
+                                            </div>
+                                        </template>
+                                    </details>
                                 </div>
                             </template>
                         </div>

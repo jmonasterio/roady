@@ -373,6 +373,33 @@ section h3 {
     opacity: 0.5;
 }
 
+/* "Didn't bring" section on the From Gig list */
+.didnt-bring {
+    margin-top: 0.5rem;
+    border-top: 1px solid var(--pico-form-element-border-color);
+    padding-top: 0.75rem;
+}
+
+.didnt-bring summary {
+    cursor: pointer;
+    color: var(--pico-muted-color);
+    font-size: 0.9rem;
+    padding: 0.4rem 0;
+}
+
+.didnt-bring-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--pico-form-element-border-color);
+}
+
+.didnt-bring-row:last-child {
+    border-bottom: none;
+}
+
 /* All loaded message */
 .all-loaded-message {
     background: var(--pico-form-element-background-color);
