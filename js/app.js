@@ -470,7 +470,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
             const pk = window.Auth?.getPubkey?.();
             const mine = pk ? this.bandMembers.find(m => this.memberPubkeys(m).includes(pk)) : null;
             if (mine) {
-                this.nostrDisplayName = mine.name + (mine.role ? ' · ' + mine.role : '');
+                this.nostrDisplayName = mine.name;
                 this.nostrAvatarHtml = window.nuiAvatarHtml ? window.nuiAvatarHtml({ name: mine.name }, pk, 28) : '';
                 // Guest keys have no kind-0, so the login card would label the
                 // recent-connection row "Guest Mode". Seed the library's profile

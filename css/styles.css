@@ -136,9 +136,56 @@ section h3 {
     margin-top: 0.5rem;
 }
 
-/* Tab buttons for gig detail */
+/* App-like sticky top bar */
+.top-nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: var(--pico-background-color);
+}
+
+/* Tab rows — segmented control */
 .tab-buttons {
+    display: flex;
+    width: 100%;
+    max-width: 480px;
+    gap: 2px;
+    padding: 3px;
+    background: var(--pico-form-element-background-color);
+    border: 1px solid var(--pico-form-element-border-color);
+    border-radius: 10px;
     margin-bottom: 1.5rem;
+}
+
+.tab-buttons button,
+.tab-buttons button.outline,
+.tab-buttons button.secondary {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    padding: 0.45rem 0.4rem;
+    font-size: 0.9rem;
+    font-weight: 500;
+    line-height: 1.2;
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    box-shadow: none;
+    color: var(--pico-muted-color);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.tab-buttons button.outline:hover {
+    color: var(--pico-color);
+}
+
+/* Active segment = the button without the outline/secondary marker */
+.tab-buttons button:not(.outline):not(.secondary) {
+    background: var(--pico-primary);
+    color: var(--pico-primary-inverse);
 }
 
 /* Checklist Progress */
@@ -692,23 +739,6 @@ main.container {
         flex: 1;
     }
 
-    /* Tab rows: equal-width buttons that fit the viewport */
-    .tab-buttons {
-        display: flex;
-        width: 100%;
-        gap: 0.5rem;
-    }
-
-    .tab-buttons button {
-        flex: 1;
-        min-width: 0;
-        margin: 0;
-        padding: 0.5rem 0.25rem;
-        font-size: 0.85rem;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
 
     /* Dialogs already full-screen, just ensure proper layout */
     dialog article header {
