@@ -1,5 +1,18 @@
 # Agent Commands
 
+## Project Scale
+
+**There are very few users** (roughly a handful, all early adopters). Optimize
+accordingly:
+- **Favor clean cutovers over backward-compat shims.** Breaking a data shape or
+  route is cheap — there's little production data and few sessions to migrate.
+  Don't build migration scaffolding, dual-read fallbacks, or deprecation
+  windows unless explicitly asked.
+- **A stale-cache or bad deploy affects almost no one.** Ship fixes directly;
+  no elaborate staged rollouts.
+- **Still deploy deliberately** — few users is not zero users. Verify before
+  yielding, and never destroy the little real data that exists without asking.
+
 ## Issue Tracking (bd)
 
 **bd - Dependency-Aware Issue Tracker**
