@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <meta name="theme-color" content="#1a1a1a">
+    <meta name="theme-color" content="#0E0E10">
     <meta name="description" content="Equipment checklist for band roadies">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -18,16 +18,21 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192x192.png">
     <link rel="apple-touch-icon" href="/icons/icon-192x192.png">
 
+    <!-- Fonts: Workshop Web display + mono + Sharpie (see VISUAL_DESIGN_PLAN.md) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Permanent+Marker&display=swap" rel="stylesheet">
+
     <!-- Stylesheets -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-    <link rel="stylesheet" href="css/styles.css?v=20260702g">
+    <link rel="stylesheet" href="css/styles.css?v=20260703a">
     <script src="https://cdn.jsdelivr.net/npm/dexie@4.0.10/dist/dexie.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <script src="js/auth.js?v=20260702e"></script>
-    <script src="js/sync.js?v=20260702e"></script>
-    <script src="js/db.js?v=20260702e"></script>
-    <script src="js/tenant-manager.js?v=20260702e"></script>
-    <script src="js/app.js?v=20260702g"></script>
+    <script src="js/auth.js?v=20260703a"></script>
+    <script src="js/sync.js?v=20260703a"></script>
+    <script src="js/db.js?v=20260703a"></script>
+    <script src="js/tenant-manager.js?v=20260703a"></script>
+    <script src="js/app.js?v=20260703a"></script>
 
 
     <!-- Service Worker Registration -->
@@ -82,7 +87,37 @@
             </ul>
             <ul x-show="isAuthenticated" class="nav-user" style="margin:0;padding:0;list-style:none;">
                 <li style="display:flex;align-items:center;gap:0.5rem;">
-                    <span class="sync-dot" x-show="options.couchDbUrl" :class="'sync-' + syncStatus" :title="getSyncStatusText()"></span>
+                    <span class="sync-status" @click.outside="showSyncPanel = false">
+                        <button type="button" class="sync-dot"
+                            :class="[syncDotClass(), syncErrorLog.length ? 'has-errors' : '']"
+                            :title="getSyncStatusText()"
+                            :aria-label="'Sync status: ' + getSyncStatusText()"
+                            @click="showSyncPanel = !showSyncPanel; if (showSyncPanel) _refreshPendingCount()"></button>
+                        <div class="sync-panel" x-show="showSyncPanel" x-cloak @click.stop>
+                            <div class="sync-panel-head">
+                                <span class="sync-dot" :class="syncDotClass()" style="cursor:default;"></span>
+                                <strong x-text="getSyncStatusText()"></strong>
+                                <span class="sync-panel-status" x-show="pendingCount > 0" x-text="pendingCount + ' queued'"></span>
+                            </div>
+                            <ul class="sync-errs" x-show="syncErrorLog.length">
+                                <template x-for="(err, i) in syncErrorLog" :key="i">
+                                    <li>
+                                        <span class="sync-err-time" x-text="formatSyncTime(err.ts)"></span>
+                                        <span class="sync-err-msg" x-text="err.msg"></span>
+                                    </li>
+                                </template>
+                            </ul>
+                            <p class="sync-empty" x-show="!syncErrorLog.length">No recent sync errors.</p>
+                            <div class="sync-panel-actions">
+                                <button type="button" class="secondary"
+                                    :disabled="isRetrying"
+                                    @click="reconnect(); showSyncPanel = false"
+                                    x-text="isRetrying ? 'Reconnecting…' : 'Reconnect'"></button>
+                                <button type="button" class="secondary outline"
+                                    x-show="syncErrorLog.length" @click="clearSyncErrors()">Clear</button>
+                            </div>
+                        </div>
+                    </span>
                     <span x-html="nostrAvatarHtml"></span>
                     <span class="nav-user-details" x-text="nostrDisplayName" style="font-size:0.85rem;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" :title="nostrNpub"></span>
                     <button class="secondary outline nav-user-details" style="padding:0.2rem 0.6rem;font-size:0.75rem;margin:0;" @click="window.Auth.logout();location.reload()">Sign out</button>
@@ -1488,7 +1523,7 @@
         </div>
     </div>
     <script type="module">
-        import { NostrAuth, NostrLoginUI, encodeNpub, nuiAvatarHtml, nuiDisplayName, setCachedProfile } from './js/nostr-universal.js?v=20260702b';
+        import { NostrAuth, NostrLoginUI, encodeNpub, nuiAvatarHtml, nuiDisplayName, setProfileOverride } from './js/nostr-universal.js?v=20260702c';
 
         const APP_NAME = 'roady';
         const RELAYS   = ['wss://relay.nsec.app', 'wss://relay.damus.io', 'wss://nos.lol'];
@@ -1509,7 +1544,7 @@
         window.encodeNpub = encodeNpub;
         window.nuiAvatarHtml  = nuiAvatarHtml;
         window.nuiDisplayName = nuiDisplayName;
-        window.setCachedProfile = setCachedProfile;
+        window.setProfileOverride = setProfileOverride;
 
         let _sessionReady = false;
         const overlay = document.getElementById('nostr-login-overlay');

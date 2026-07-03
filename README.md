@@ -8,6 +8,9 @@ Equipment checklist management for band roadies and touring professionals.
 - **[Database Design](docs/database-design.md)** - Schema and architecture
 - **[Terminology](docs/terminology.md)** - Glossary of terms
 - **[Agent Guide](docs/agent.md)** - Developer/AI agent guidance
+- **[Visual Design Plan](VISUAL_DESIGN_PLAN.md)** - "THE ROAD CASE" dark flight-case skin: rationale, palette, phased plan
+- **[Design Spine](docs/design-spine.md)** - Locked visual tokens, palette, vocabulary, component inventory
+- **[Visual Design Guide](visual-design.md)** - The LOOK: full component specs, CSS snippets, wireframes
 - **[Virtual Tables Migration](VIRTUAL_TABLES_MIGRATION.md)** - MyCouch endpoint updates (NEW)
 - **[MyCouch API Docs](../mycouch/docs/VIRTUAL_TABLES_API.md)** - Complete API reference
 

@@ -637,26 +637,95 @@ main.container {
     display: none !important;
 }
 
-/* Sync status dot (mobile top bar) */
+/* Sync status dot + clickable error panel (all viewports) */
+.sync-status {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
 .sync-dot {
-    display: none;
-    width: 10px;
-    height: 10px;
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    padding: 0;
+    border: none;
     border-radius: 50%;
     background: var(--pico-muted-color);
     flex-shrink: 0;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+    box-shadow: none;
 }
 
-.sync-dot.sync-paused {
-    background: #2ecc71;
-}
+.sync-dot.sync-paused { background: #2ecc71; }
+.sync-dot.sync-active { background: #f1c40f; }
+.sync-dot.sync-error  { background: #e74c3c; }
+.sync-dot.sync-idle   { background: var(--pico-muted-color); }
+.sync-dot.has-errors  { box-shadow: 0 0 0 3px rgba(231, 76, 60, 0.35); }
 
-.sync-dot.sync-active {
-    background: #f1c40f;
+.sync-panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 1200;
+    width: min(90vw, 340px);
+    background: var(--pico-card-background-color);
+    color: var(--pico-color);
+    border: 1px solid var(--pico-form-element-border-color);
+    border-radius: var(--pico-border-radius);
+    box-shadow: var(--pico-card-box-shadow, 0 8px 24px rgba(0, 0, 0, 0.35));
+    padding: 0.75rem;
+    text-align: left;
+    font-size: 0.8rem;
 }
-
-.sync-dot.sync-error {
-    background: #e74c3c;
+.sync-panel-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+.sync-panel-head strong { font-size: 0.85rem; }
+.sync-panel-head .sync-panel-status {
+    margin-left: auto;
+    opacity: 0.75;
+    font-size: 0.75rem;
+}
+.sync-errs {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 40vh;
+    overflow-y: auto;
+}
+.sync-errs li {
+    padding: 0.4rem 0;
+    border-top: 1px solid var(--pico-muted-border-color);
+}
+.sync-errs .sync-err-time {
+    display: block;
+    opacity: 0.6;
+    font-size: 0.7rem;
+}
+.sync-errs .sync-err-msg {
+    display: block;
+    word-break: break-word;
+}
+.sync-empty {
+    opacity: 0.6;
+    padding: 0.4rem 0;
+    margin: 0;
+}
+.sync-panel-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.6rem;
+}
+.sync-panel-actions button {
+    margin: 0;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.75rem;
+    width: auto;
 }
 
 /* Bottom tab bar (mobile only) */
@@ -1081,3 +1150,214 @@ main.container {
         font-size: 16pt;
     }
 }
+
+/* ===============================================================
+   FLIGHT-CASE DESIGN SYSTEM — "THE ROAD CASE"  (see VISUAL_DESIGN_PLAN.md)
+   Dark backstage skin: stage-black surfaces, aluminum edging, console
+   accents. Phone-first, press-not-hover. Appended last so it wins the
+   cascade over the legacy rules above.
+   =============================================================== */
+
+:root {
+  /* materials */
+  --stage-black:#0E0E10; --case-black:#17171A; --tolex:#202024;
+  --input-bg:#1D1D21; --aluminum:#E4E2DC; --gaffer-gray:#8A8A82; --case-edge:#34343A;
+  /* console accents */
+  --cue-green:#33D17A; --live-red:#FF3B30; --standby-amber:#FFB000;
+  --patch-blue:#2E7DD1; --hazard:#F2C230;
+  /* white setlist paper — PRINT / PDF ONLY; screen stays dark */
+  --setlist-paper:#F4F1E8;
+  /* structure */
+  --border:2px solid var(--aluminum); --radius:0; --unit:8px;
+  --shadow-block:3px 3px 0 rgba(228,226,220,.14); --snap:120ms linear;
+  /* type */
+  --font-display:'Oswald','Archivo Narrow',system-ui,sans-serif;
+  --font-body:'IBM Plex Mono','Courier Prime',ui-monospace,'Cascadia Mono',monospace;
+  --font-note:'Permanent Marker',cursive;
+}
+
+/* --- Pico variable overrides (re-skin the classless base) --------- */
+:root, [data-theme="dark"] {
+  --pico-background-color:var(--stage-black);
+  --pico-color:var(--aluminum);
+  --pico-h1-color:var(--aluminum); --pico-h2-color:var(--aluminum);
+  --pico-h3-color:var(--aluminum); --pico-h4-color:var(--aluminum);
+  --pico-h5-color:var(--aluminum); --pico-h6-color:var(--aluminum);
+  --pico-muted-color:var(--gaffer-gray); --pico-muted-border-color:var(--case-edge);
+  --pico-border-color:var(--case-edge); --pico-border-radius:0;
+  --pico-card-background-color:var(--case-black);
+  --pico-card-sectioning-background-color:var(--tolex);
+  --pico-card-box-shadow:none;
+  --pico-primary:var(--cue-green); --pico-primary-background:var(--cue-green);
+  --pico-primary-border:var(--cue-green); --pico-primary-hover:var(--cue-green);
+  --pico-primary-hover-background:var(--cue-green);
+  --pico-primary-focus:rgba(46,125,209,.5); --pico-primary-inverse:var(--stage-black);
+  --pico-secondary:var(--aluminum); --pico-secondary-background:var(--case-edge);
+  --pico-secondary-border:var(--aluminum); --pico-secondary-hover:var(--aluminum);
+  --pico-secondary-hover-background:var(--case-edge); --pico-secondary-inverse:var(--stage-black);
+  --pico-contrast:var(--aluminum); --pico-contrast-background:var(--aluminum);
+  --pico-contrast-hover:var(--aluminum); --pico-contrast-inverse:var(--stage-black);
+  --pico-form-element-background-color:var(--input-bg);
+  --pico-form-element-active-background-color:var(--input-bg);
+  --pico-form-element-border-color:var(--case-edge);
+  --pico-form-element-active-border-color:var(--patch-blue);
+  --pico-form-element-focus-color:var(--patch-blue);
+  --pico-form-element-color:var(--aluminum);
+  --pico-form-element-placeholder-color:var(--gaffer-gray);
+  --pico-form-element-valid-border-color:var(--cue-green);
+  --pico-form-element-valid-active-border-color:var(--cue-green);
+  --pico-form-element-invalid-border-color:var(--live-red);
+  --pico-form-element-invalid-active-border-color:var(--live-red);
+  --pico-switch-background-color:var(--case-edge);
+  --pico-switch-checked-background-color:var(--cue-green);
+  --pico-mark-background-color:var(--hazard); --pico-mark-color:var(--stage-black);
+  --pico-font-family:var(--font-body); --pico-font-family-sans-serif:var(--font-body);
+  --pico-blockquote-border-color:var(--cue-green);
+}
+
+/* --- Typography -------------------------------------------------- */
+h1,h2,h3,h4,h5,h6 {
+  font-family:var(--font-display); text-transform:uppercase; letter-spacing:.01em;
+}
+main h2 { border-bottom:var(--border); padding-bottom:4px; }
+a { color:var(--cue-green); text-decoration-thickness:2px; text-underline-offset:2px; }
+mark { padding:0 .15em; }
+
+/* --- Buttons: shop switches (flat, square, press-not-hover) ------- */
+button:not(.sync-dot):not(.band-switcher-btn),
+[role="button"], input[type="submit"], input[type="button"], input[type="reset"] {
+  border-radius:0; font-family:var(--font-body); text-transform:uppercase;
+  letter-spacing:.06em; font-weight:600;
+  transition:transform var(--snap), box-shadow var(--snap), background var(--snap);
+}
+button:not(.sync-dot):not(.band-switcher-btn):active,
+[role="button"]:active { transform:translate(2px,2px); box-shadow:none; }
+button.secondary { background:transparent; color:var(--aluminum); border:var(--border); }
+button:focus-visible, [role="button"]:focus-visible,
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline:3px solid var(--patch-blue); outline-offset:0;
+}
+@media (prefers-reduced-motion: reduce) {
+  button, [role="button"] { transition:none; }
+  button:active, [role="button"]:active { transform:none; }
+}
+
+/* --- Forms: fill each line ------------------------------------- */
+input[type="checkbox"], input[type="radio"] { accent-color:var(--cue-green); }
+
+/* --- Top bar: the case ID panel + gaffer-tape band label -------- */
+.top-nav { background:var(--tolex); border-bottom:var(--border); }
+.nav-links a { font-family:var(--font-display); text-transform:uppercase; letter-spacing:.05em; }
+nav a.active { color:var(--cue-green); text-decoration-thickness:3px; }
+.band-name {
+  display:inline-block; font-family:var(--font-note); text-transform:none;
+  background:var(--aluminum); color:var(--stage-black); padding:2px 10px;
+  transform:rotate(-1.5deg); box-shadow:2px 2px 0 rgba(0,0,0,.35); line-height:1.25;
+}
+
+/* --- Sub-tabs: the tool rack (active = cue-green block) --------- */
+.tab-buttons {
+  gap:0; padding:0; max-width:none; background:var(--tolex);
+  border:var(--border); border-radius:0; overflow-x:auto;
+}
+.tab-buttons button,
+.tab-buttons button.outline,
+.tab-buttons button.secondary {
+  flex:1 0 auto; border:0; border-right:var(--border); border-radius:0;
+  background:var(--tolex); color:var(--gaffer-gray);
+  text-transform:uppercase; letter-spacing:.06em; font-weight:600;
+  padding:.7rem .8rem; min-height:44px; white-space:nowrap;
+}
+.tab-buttons button:last-child { border-right:0; }
+.tab-buttons button:not(.outline):not(.secondary) {
+  background:var(--cue-green); color:var(--stage-black);
+}
+
+/* --- Sync: the signal LED (the ONE allowed glow) --------------- */
+.sync-dot {
+  width:12px; height:12px; border-radius:0; border:1px solid rgba(0,0,0,.45); box-shadow:none;
+}
+.sync-dot.sync-paused { background:var(--cue-green); box-shadow:0 0 6px rgba(51,209,122,.7); }
+.sync-dot.sync-active { background:var(--standby-amber); box-shadow:0 0 6px rgba(255,176,0,.7); }
+.sync-dot.sync-error  { background:var(--live-red); box-shadow:0 0 6px rgba(255,59,48,.7); }
+.sync-dot.sync-idle   { background:var(--gaffer-gray); }
+.sync-dot.has-errors  { box-shadow:0 0 0 3px rgba(255,59,48,.35); }
+
+/* --- Gig card: a flight-case SHOW with a corner plate ---------- */
+.gig-item {
+  position:relative; display:block; background:var(--case-black);
+  border:var(--border); border-radius:0; box-shadow:none; margin-bottom:var(--unit);
+  padding:calc(var(--unit)*2); padding-top:calc(var(--unit)*2 + 8px);
+  transition:transform var(--snap);
+}
+.gig-item::before {
+  content:"GIG"; position:absolute; top:-2px; left:-2px;
+  background:var(--aluminum); color:var(--stage-black);
+  font-family:var(--font-body); font-size:9px; font-weight:600; letter-spacing:.12em;
+  padding:1px 6px;
+}
+.gig-item:active { transform:translate(2px,2px); }
+.gig-item strong { font-family:var(--font-display); text-transform:uppercase; letter-spacing:.02em; }
+.gig-item .text-muted {
+  font-family:var(--font-body); text-transform:uppercase; letter-spacing:.05em; font-size:.8rem;
+}
+.gig-item.past-gig { opacity:.55; }
+.gig-item.past-gig strong::after {
+  content:" · STRUCK"; color:var(--gaffer-gray);
+  font-family:var(--font-body); font-size:.7em; letter-spacing:.1em; font-weight:400;
+}
+
+/* --- Manifest line items (gear / kits / songs / templates) ------ */
+.equipment-item {
+  background:var(--case-black); border:var(--border); border-radius:0;
+  box-shadow:none; margin-bottom:var(--unit); padding:calc(var(--unit)*1.5);
+}
+.equipment-item strong { font-family:var(--font-display); text-transform:uppercase; letter-spacing:.02em; }
+
+/* --- Bottom tab bar (phone-primary nav) ------------------------ */
+.bottom-nav { background:var(--tolex); border-top:var(--border); }
+.bottom-nav button { color:var(--gaffer-gray); text-transform:uppercase; letter-spacing:.04em; }
+.bottom-nav button.active { color:var(--cue-green); box-shadow:inset 0 3px 0 var(--cue-green); }
+
+/* --- Checklists: the load-out clipboard ------------------------ */
+.checklist-progress { background:var(--case-black); border:var(--border); border-radius:0; }
+.progress-bar { border:var(--border); border-radius:0; background:var(--input-bg) !important; }
+.progress-bar-fill { background:var(--cue-green) !important; }
+.check-row.is-checked .check-box { color:var(--cue-green); }
+
+/* --- Status stamps (console indicators) ------------------------ */
+.badge {
+  display:inline-block; border:var(--border); border-radius:0; padding:2px 6px;
+  font-family:var(--font-body); font-size:11px; letter-spacing:.08em;
+  text-transform:uppercase; font-weight:600;
+}
+.badge-missing { background:var(--live-red); color:var(--aluminum); }
+.badge-standby { background:var(--standby-amber); color:var(--stage-black); }
+.badge-go { background:var(--cue-green); color:var(--stage-black); }
+.badge-idle { background:var(--case-black); color:var(--aluminum); }
+.badge-struck { background:var(--gaffer-gray); color:var(--stage-black); }
+
+/* --- Hazard stripe: offline / queued banner -------------------- */
+.hazard-stripe {
+  background:
+    linear-gradient(rgba(14,14,16,.72), rgba(14,14,16,.72)),
+    repeating-linear-gradient(45deg,var(--hazard) 0 12px,var(--stage-black) 12px 24px);
+  color:var(--aluminum); border:var(--border); border-radius:0;
+  padding:.5rem .75rem; font-family:var(--font-body);
+  text-transform:uppercase; letter-spacing:.06em; font-weight:600;
+}
+
+/* --- Empty states: stencil plates ------------------------------ */
+.empty-state {
+  border:var(--border); border-radius:0; background:var(--case-black);
+  color:var(--gaffer-gray); font-style:normal;
+  font-family:var(--font-body); text-transform:uppercase; letter-spacing:.08em;
+}
+
+/* --- Stage View (live): STAYS DARK — readable on a dark stage --- */
+.performance-view { background:var(--stage-black); color:var(--aluminum); }
+.performance-title, .performance-section h3 {
+  font-family:var(--font-display); text-transform:uppercase; letter-spacing:.02em;
+}
+.performance-section h3 { border-bottom:2px solid var(--cue-green); }
+/* (white paper is applied only under @media print, above.) */

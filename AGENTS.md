@@ -1,5 +1,24 @@
 # Agent Commands
 
+## Visual Design — "THE ROAD CASE"
+
+roady wears a Tom Sachs / Van Neistat **Workshop Web** skin: a **dark
+flight-case** theme (stage-black surfaces, aluminum edging, mixing-console
+accents), phone-first, press-not-hover. **Read before restyling `index.html` /
+`css/styles.css`:**
+- **[docs/design-spine.md](docs/design-spine.md)** — the LOCKED token contract:
+  palette/hexes, type, vocabulary map, component inventory, status stamps.
+- **[visual-design.md](visual-design.md)** — the full LOOK guide: component
+  specs, CSS snippets, wireframes.
+- **[VISUAL_DESIGN_PLAN.md](VISUAL_DESIGN_PLAN.md)** — rationale + phased plan.
+
+The system lives in the `FLIGHT-CASE DESIGN SYSTEM` block appended to
+`css/styles.css` (Pico-variable overrides + component layer). Invariants: DARK
+only on screen (white `--setlist-paper` is `@media print` only), `--cue-green`
+is the one primary accent, no hover-dependent affordances, band-scale plain
+nouns. Bump the `?v=` cache-buster on every asset in `index.html` after any
+JS/CSS change.
+
 ## Project Scale
 
 **There are very few users** (roughly a handful, all early adopters). Optimize
