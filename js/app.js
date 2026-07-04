@@ -386,15 +386,6 @@ const MAX_DEVICES_PER_MEMBER = 5;
             // Set current database name for display
             this.currentDbName = `pouchdb-local-${DB.hashRemoteUrl(resolvedMycouchUrl)}-${username}`;
 
-            // 4. Start sync FIRST — before tenant init and band loading. Those
-            // are serialized remote signs (60s timeout each on a struggling
-            // NIP-46 signer); starting sync after them left Sync.status at
-            // 'idle' ("Not syncing", no errors) for minutes after a refresh.
-            // Started here, the WS envelope sign is first in the queue and the
-            // panel truthfully shows 'Connecting…' from the first paint.
-            this.setupSyncListeners();
-            this.enableSync();
-
             // 5. Initialize Tenant Context with loaded options
             try {
                 console.log('🏢 Initializing Tenant Context...');
@@ -458,6 +449,14 @@ const MAX_DEVICES_PER_MEMBER = 5;
             // Initial render from local PouchDB (may be empty on new browser;
             // db-sync-change will reload once remote data arrives).
             await this.loadData();
+
+            // Start sync AFTER the UI-critical loads. enableSync enqueues the
+            // WS-envelope signature, and Auth's sign queue is serialized — put
+            // before tenant init it made /api/my-tenants wait behind a WS sign
+            // that can hang 60s on an unresponsive signer, stranding the UI on
+            // "Loading". The tenant/bands signs must go first.
+            this.setupSyncListeners();
+            this.enableSync();
 
             // First paint now. The band name is already set by loadBands(); the
             // band-details + members fetch below hits the API and can take tens
