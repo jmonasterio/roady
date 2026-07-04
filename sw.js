@@ -49,7 +49,10 @@ self.addEventListener('fetch', event => {
   }
 
   event.respondWith(
-    fetch(event.request)
+    // Navigations must revalidate at origin — otherwise the browser HTTP
+    // cache can hand the SW a stale index.html and the phone sits on an
+    // old build until the cache expires.
+    fetch(event.request, req.mode === 'navigate' ? { cache: 'no-cache' } : undefined)
       .then(response => {
         // Cache successful responses for offline use
         if (response && response.status === 200) {

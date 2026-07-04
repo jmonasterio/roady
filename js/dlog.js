@@ -71,5 +71,5 @@
         window.DLog.push('js', `UNHANDLED ${r?.message || r}`);
     });
 
-    window.DLog.push('app', `boot — online=${navigator.onLine} visible=${document.visibilityState}`);
+    window.DLog.push('app', `boot build=${window.ROADY_BUILD || '?'} — online=${navigator.onLine} visible=${document.visibilityState}`);
 })();

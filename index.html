@@ -28,7 +28,8 @@
     <link rel="stylesheet" href="css/styles.css?v=20260703a">
     <script src="https://cdn.jsdelivr.net/npm/dexie@4.0.10/dist/dexie.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <script src="js/dlog.js?v=20260704c"></script>
+    <script>window.ROADY_BUILD = '20260704d'; // bump together with the ?v= busters below</script>
+    <script src="js/dlog.js?v=20260704d"></script>
     <script src="js/auth.js?v=20260704c"></script>
     <script src="js/sync.js?v=20260704c"></script>
     <script src="js/db.js?v=20260704c"></script>
@@ -44,6 +45,9 @@
                 navigator.serviceWorker.register('/sw.js')
                     .then(registration => {
                         console.log('ServiceWorker registered:', registration);
+                        // Check for a new SW on every load — a phone PWA can
+                        // otherwise sit on an old worker for days.
+                        registration.update().catch(() => {});
                     })
                     .catch(error => {
                         console.log('ServiceWorker registration failed:', error);
@@ -99,6 +103,7 @@
                                 <span class="sync-dot" :class="syncDotClass()" style="cursor:default;"></span>
                                 <strong x-text="getSyncStatusText()"></strong>
                                 <span class="sync-panel-status" x-show="pendingCount > 0" x-text="pendingCount + ' queued'"></span>
+                                <small style="margin-left:auto;opacity:0.6;" x-text="'build ' + (window.ROADY_BUILD || '?')"></small>
                             </div>
                             <ul class="sync-errs" x-show="syncErrorLog.length">
                                 <template x-for="(err, i) in syncErrorLog" :key="i">
