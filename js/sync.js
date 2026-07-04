@@ -33,6 +33,9 @@ window.Sync = {
     pollTimer: null,
     POLL_FALLBACK_AFTER_MS: 5_000,   // arm fallback if WS hasn't welcomed by then
     POLL_INTERVAL_MS: 10_000,
+    POLL_MAX_INTERVAL_MS: 120_000,   // poll backoff ceiling when signing fails
+    _pollFailures: 0,
+    _resumeKick: null,
     CHANGES_LIMIT: 500,
 
     // ---------------------------------------------------------------
@@ -71,6 +74,7 @@ window.Sync = {
             this._setStatus('error');
             return false;
         }
+        this._installResumeKick();
         this._connect();
         this._scheduleDrain(50);
         return true;
@@ -128,6 +132,7 @@ window.Sync = {
             envelope = await window.Auth.signMna1(signUrl, 'GET');
         } catch (e) {
             console.error('[Sync] envelope sign failed:', e);
+            window.DLog?.push('ws', `envelope sign failed: ${e?.message || e}`);
             // Surface it: without a signed envelope the WS never connects and
             // catch-up never runs, so the local DB stays empty (no data).
             window.dispatchEvent(new CustomEvent('db-sync-error', {
@@ -141,6 +146,7 @@ window.Sync = {
             this._scheduleReconnect();
             return;
         }
+        window.DLog?.push('ws', `dialing ${wsUrl}`);
         let ws;
         try {
             ws = new WebSocket(wsUrl);
@@ -163,6 +169,7 @@ window.Sync = {
                 };
                 if (clientId) hello.clientId = clientId;
                 ws.send(JSON.stringify(hello));
+                window.DLog?.push('ws', `open — hello sent (lastSeq ${lastSeq | 0})`);
             } catch (e) {
                 console.error('[Sync] hello failed:', e);
                 try { ws.close(); } catch (_) {}
@@ -173,6 +180,7 @@ window.Sync = {
             console.debug('[Sync] WS error event', e?.type || e);
         };
         ws.onclose = (ev) => {
+            window.DLog?.push('ws', `closed code=${ev.code}${ev.reason ? ' reason=' + ev.reason : ''}`);
             this.ws = null;
             if (this.closing) return;
             // 4401 = auth_failed / pubkey_changed (closed deliberately by hub)
@@ -196,9 +204,30 @@ window.Sync = {
             this.RECONNECT_MAX_MS,
             this.RECONNECT_BASE_MS * 2 ** this.reconnectAttempts,
         );
+        window.DLog?.push('ws', `reconnect in ${ms}ms (attempt ${this.reconnectAttempts})`);
         if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
         this.reconnectTimer = setTimeout(() => this._connect(), ms);
         this._armPollFallback();
+    },
+
+    // Phones drop sockets and radios even in the foreground; when the page
+    // regains visibility or the network returns, reconnect NOW instead of
+    // waiting out the backoff ladder (which can sit at 30s+, looking dead).
+    _installResumeKick() {
+        if (this._resumeKick) return;
+        this._resumeKick = () => {
+            if (this.closing) return;
+            if (document.visibilityState === 'hidden') return;
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+            if (this.status === 'connecting') return;
+            window.DLog?.push('ws', 'resume kick — reconnecting now');
+            this.reconnectAttempts = 0;
+            if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+            this._connect();
+        };
+        document.addEventListener('visibilitychange', this._resumeKick);
+        window.addEventListener('online', this._resumeKick);
     },
 
     // ---------------------------------------------------------------
@@ -211,6 +240,7 @@ window.Sync = {
 
         switch (frame.type) {
             case 'welcome':
+                window.DLog?.push('ws', 'welcome — sync active');
                 if (frame.clientId) await DB.setClientId(frame.clientId);
                 this.reconnectAttempts = 0;
                 this._cancelPollFallback();
@@ -303,6 +333,7 @@ window.Sync = {
             const url = `${this.url}/${DB.DB_ID}/changes?since=${since}&limit=${this.CHANGES_LIMIT}`;
             const res = await window.Auth.fetchWithAuth(url, { method: 'GET' });
             if (res.ok) {
+                this._pollFailures = 0;
                 const body = await res.json();
                 for (const ch of body.changes || []) {
                     await DB.applyServerChange(ch);
@@ -310,23 +341,35 @@ window.Sync = {
                 if (typeof body.last_seq === 'number') {
                     await DB.setLastSeq(body.last_seq);
                 }
+                window.DLog?.push('poll', `since=${since} → ${(body.changes || []).length} changes`);
                 window.dispatchEvent(new CustomEvent('db-sync-change', {
                     detail: { polled: true, count: (body.changes || []).length },
                 }));
             } else if (res.status === 401) {
                 console.error('[Sync] /changes auth rejected');
+                window.DLog?.push('poll', '401 unauthorized');
                 this._setStatus('error');
             } else {
                 console.debug('[Sync] /changes returned', res.status);
+                window.DLog?.push('poll', `HTTP ${res.status}`);
             }
         } catch (e) {
+            // Signing/transport failure. Every poll costs a remote sign_event —
+            // polling a broken signer every 10s IS the rate-limit storm. Back
+            // off exponentially until a poll succeeds.
+            this._pollFailures = Math.min((this._pollFailures || 0) + 1, 6);
             console.debug('[Sync] /changes transport failed:', e.message);
+            window.DLog?.push('poll', `failed: ${e?.message || e} (backoff x${this._pollFailures})`);
         } finally {
             // Keep polling until the WS is healthy again.
             if (!this.closing && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
+                const interval = Math.min(
+                    this.POLL_INTERVAL_MS * 2 ** (this._pollFailures || 0),
+                    this.POLL_MAX_INTERVAL_MS,
+                );
                 this.pollTimer = setTimeout(
                     () => this._pollChanges(),
-                    this.POLL_INTERVAL_MS,
+                    interval,
                 );
             }
         }

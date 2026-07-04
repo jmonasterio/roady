@@ -145,13 +145,23 @@ window.Auth = {
         // server-side freshness window — a timestamp minted at enqueue
         // time would go stale behind a slow sign).
         const step = _signQueue.then(async () => {
+            const t0 = Date.now();
+            const label = `${String(method).toUpperCase()} ${signUrl}`;
+            window.DLog?.push('sign', `→ ${label}`);
             const event = {
                 kind: 27235,
                 content: '',
                 tags,
                 created_at: Math.floor(Date.now() / 1000),
             };
-            return await this._auth.sign(event);
+            try {
+                const signed = await this._auth.sign(event);
+                window.DLog?.push('sign', `✓ ${label} (${Date.now() - t0}ms)`);
+                return signed;
+            } catch (e) {
+                window.DLog?.push('sign', `✗ ${label} — ${e?.message || e} (${Date.now() - t0}ms)`);
+                throw e;
+            }
         });
         // Keep the queue alive when a step rejects; the caller below
         // still receives the real rejection via `await step`.

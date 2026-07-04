@@ -169,6 +169,11 @@ const MAX_DEVICES_PER_MEMBER = 5;
         showSyncPanel: false,
         pendingCount: 0,
 
+        // On-device debug log (window.DLog) viewer state — see js/dlog.js.
+        showDebugLog: false,
+        debugLogText: '',
+        debugLogCopied: false,
+
         // Confirmation dialog state
         confirmationDialog: {
             isOpen: false,
@@ -1007,6 +1012,23 @@ const MAX_DEVICES_PER_MEMBER = 5;
         clearSyncErrors() {
             this.syncErrorLog = [];
             this.syncError = null;
+        },
+
+        refreshDebugLog() {
+            this.debugLogText = window.DLog ? window.DLog.text() : '(debug log unavailable)';
+        },
+
+        async copyDebugLog() {
+            this.refreshDebugLog();
+            try {
+                await navigator.clipboard.writeText(this.debugLogText);
+                this.debugLogCopied = true;
+                setTimeout(() => { this.debugLogCopied = false; }, 1500);
+            } catch (_) {
+                // Clipboard API needs https + permission; on failure the user
+                // can still long-press-select the visible text.
+                this.showSnackbar('Copy failed — long-press the log text to select it', 'error');
+            }
         },
 
         formatSyncTime(ts) {

@@ -974,6 +974,7 @@ class RelayPool {
     const failedAt = this.failedRelays.get(url);
     if (failedAt !== undefined) {
       if (Date.now() - failedAt < this.retryBackoff) {
+        window.DLog?.push('relay', 'cooldown skip ' + url);
         const err = new Error(`Relay cooling down: ${url}`);
         err.cooldown = true;
         throw err;
@@ -1021,6 +1022,7 @@ class RelayPool {
         _safeCloseWs(relay.ws);
         this.relays.delete(url);
         this.failedRelays.set(url, Date.now());
+        window.DLog?.push('relay', 'dial timeout ' + url);
         reject(new Error(`Connection timeout: ${url}`));
       }, this.connectionTimeout);
 
@@ -1029,6 +1031,7 @@ class RelayPool {
         relay.status = 'connected';
         opened = true;
         this.failedRelays.delete(url);
+        window.DLog?.push('relay', 'connected ' + url);
 
         // Replay active subscriptions targeting this relay (NIP-01 REQs die
         // with the socket; without this a dropped relay silently loses every
@@ -1065,6 +1068,7 @@ class RelayPool {
         relay.status = 'failed';
         this.relays.delete(url);
         if (!opened) this.failedRelays.set(url, Date.now());
+        window.DLog?.push('relay', (opened ? 'socket error ' : 'dial failed ') + url);
         reject(new Error(`Connection failed: ${url}`));
         relay.queue.forEach(q => q.reject(err));
         relay.queue = [];
@@ -1073,6 +1077,7 @@ class RelayPool {
       relay.ws.onclose = () => {
         if (relay.pingTimer) clearInterval(relay.pingTimer);
         relay.status = 'disconnected';
+        window.DLog?.push('relay', 'disconnected ' + url);
         this.relays.delete(url);
       };
 
@@ -1424,6 +1429,7 @@ class Nip46Signer extends BaseSigner {
     this.pendingRequests = new Map();
     this.subscription = null;
     this.onAuthUrl = null; // Callback: (url) => {} — called when signer requires user approval
+    this._resumeHandler = null;
   }
 
   /**
@@ -1837,6 +1843,27 @@ class Nip46Signer extends BaseSigner {
         }
       }
     );
+    this._installResumeKick();
+  }
+
+  // Phones drop relay sockets even in the foreground. When the page regains
+  // visibility or network, clear the dial cooldowns and re-attach the
+  // response listener if no relay is live — otherwise every RPC fast-fails
+  // into the 30s negative cache while the signer app sits there reachable.
+  _installResumeKick() {
+    if (this._resumeHandler) return;
+    this._resumeHandler = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      this.pool.failedRelays.clear();
+      let live = false;
+      this.pool.relays.forEach(r => { if (r.status === 'connected') live = true; });
+      if (this.connected && !live) {
+        window.DLog?.push('nip46', 'resume kick — re-subscribing signer relays');
+        this._startListening();
+      }
+    };
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this._resumeHandler);
+    window.addEventListener('online', this._resumeHandler);
   }
 
   async _rpc(method, params = [], timeoutMs) {
@@ -1890,8 +1917,20 @@ class Nip46Signer extends BaseSigner {
       this.localPrivateKey
     );
 
-    // Fire and forget — response comes via subscription, not publish confirmation
-    this.pool.publish(this.relays, event).catch(() => {});
+    // Response arrives via the subscription — but the request must actually
+    // reach a relay first. If EVERY relay was unreachable (dead sockets,
+    // cooldown), the request never left this device: fail the RPC now with
+    // the real cause instead of burning the full timeout looking like a
+    // signer problem ("signer offline or rate-limited").
+    this.pool.publish(this.relays, event).then(results => {
+      const okCount = results.filter(r => r.status === 'fulfilled').length;
+      window.DLog?.push('nip46', `${method} published to ${okCount}/${this.relays.length} relays`);
+      if (okCount === 0 && this.pendingRequests.has(id)) {
+        const { reject } = this.pendingRequests.get(id);
+        this.pendingRequests.delete(id);
+        reject(new RelayError('Could not reach the signer relay — network or relay down'));
+      }
+    }).catch(() => {});
 
     return responsePromise;
   }
@@ -1934,6 +1973,11 @@ class Nip46Signer extends BaseSigner {
       }
       this.pool.close();
     } catch (_) {}
+    if (this._resumeHandler) {
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this._resumeHandler);
+      window.removeEventListener('online', this._resumeHandler);
+      this._resumeHandler = null;
+    }
     this.connected = false;
     this.remotePubkey = null;
     this.pendingRequests.clear();
