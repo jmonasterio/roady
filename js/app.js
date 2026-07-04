@@ -2167,6 +2167,8 @@ const MAX_DEVICES_PER_MEMBER = 5;
             await DB.deleteSetlist(id);
             await this.loadData();
             this.gigSetlist = null;
+            this.setlistMode = 'view';
+            this.closeSetlistEditor();
             this.showSnackbar(
                 'Set list removed',
                 async () => {

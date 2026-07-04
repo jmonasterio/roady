@@ -28,13 +28,13 @@
     <link rel="stylesheet" href="css/styles.css?v=20260703a">
     <script src="https://cdn.jsdelivr.net/npm/dexie@4.0.10/dist/dexie.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <script>window.ROADY_BUILD = '20260704n'; // bump together with the ?v= busters below</script>
+    <script>window.ROADY_BUILD = '20260704o'; // bump together with the ?v= busters below</script>
     <script src="js/dlog.js?v=20260704d"></script>
     <script src="js/auth.js?v=20260704c"></script>
     <script src="js/sync.js?v=20260704h"></script>
     <script src="js/db.js?v=20260704h"></script>
     <script src="js/tenant-manager.js?v=20260704l"></script>
-    <script src="js/app.js?v=20260704j"></script>
+    <script src="js/app.js?v=20260704k"></script>
 
 
     <!-- Service Worker Registration -->
@@ -609,8 +609,6 @@
                                 <button @click="editGigSetlist()" class="contrast" style="margin: 0;">Edit</button>
                                 <button @click="openPerformanceView(gigSetlist)" class="secondary outline" style="margin: 0;">Performance</button>
                                 <button @click="printSetlist(gigSetlist)" class="secondary outline" style="margin: 0;">Print</button>
-                                <button @click="removeGigSetlist()" class="secondary outline"
-                                    style="background: var(--pico-del-color, #c0392b); color: white; margin: 0;">Remove</button>
                             </div>
                             <button @click="closeGigSetlist()" style="margin: 0;">Done</button>
                         </footer>
@@ -941,6 +939,9 @@
                             <button x-show="editingSetlistKind === 'template' && editingSetlist && editingSetlist._id"
                                 @click="deleteSetlistTemplate(editingSetlist._id)" class="secondary outline"
                                 style="background: var(--pico-del-color, #c0392b); color: white; margin: 0;">Delete</button>
+                            <button x-show="editingSetlistKind === 'instance' && editingSetlist && editingSetlist._id"
+                                @click="removeGigSetlist()" class="secondary outline"
+                                style="background: var(--pico-del-color, #c0392b); color: white; margin: 0;">Remove</button>
                             <button x-show="editingSetlistKind === 'instance'" @click="saveSetlistAsTemplate()"
                                 class="secondary outline" style="margin: 0;">Save as new set list</button>
                             <button x-show="editingSetlistKind === 'instance' && editingSetlist && editingSetlist.sourceTemplateId"
