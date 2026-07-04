@@ -911,15 +911,75 @@ async function signNip98(signer, url, method, body, options = {}) {
 // RELAY POOL
 // ============================================================================
 
+/**
+ * Close a relay socket without console noise. Closing a socket that is still
+ * CONNECTING makes the browser log a red "WebSocket is closed before the
+ * connection is established" error. Instead, detach handlers and close cleanly
+ * once it opens (a genuine dial failure still surfaces on its own).
+ * @private
+ */
+function _safeCloseWs(ws) {
+  if (!ws) return;
+  try {
+    if (ws.readyState === WebSocket.CONNECTING) {
+      ws.onerror = null;
+      ws.onmessage = null;
+      ws.onclose = null;
+      ws.onopen = () => { try { ws.close(); } catch (e) {} };
+    } else {
+      ws.close();
+    }
+  } catch (e) {}
+}
+
+/**
+ * RelayPool — manages WebSocket connections to Nostr relays.
+ *
+ * Connection model (NIP-01): a client SHOULD hold a SINGLE WebSocket per relay
+ * and reuse it for all subscriptions/publishes. `connect(url)` returns the
+ * existing live socket when one is present rather than dialing again.
+ *
+ * Failure handling (negative cache / backoff): NIP-46 signing under MNA1 signs
+ * one event PER request, and every publish/subscribe calls `tryConnect`. If a
+ * relay is unreachable, re-dialing it on each request produces a storm of
+ * `WebSocket … failed` errors — each a fresh socket that waits up to
+ * `connectionTimeout`. To honor the "one persistent connection" intent, a relay
+ * whose *dial* fails is recorded in `failedRelays` with a timestamp; subsequent
+ * `connect` calls fast-fail (throw an error tagged `{ cooldown: true }`, so
+ * `tryConnect` returns null) for `retryBackoff` ms instead of opening a new
+ * socket. A successful open clears the entry. A clean close of a
+ * previously-open socket does NOT record a failure — transient drops are free
+ * to reconnect immediately.
+ *
+ * @param {object} [options]
+ * @param {number} [options.connectionTimeout=20000] ms before a pending dial is abandoned
+ * @param {number} [options.pingInterval=30000]      ms between keepalive REQ pings
+ * @param {number} [options.retryBackoff=30000]      ms to skip re-dialing a relay after a failed dial
+ */
 class RelayPool {
   constructor(options = {}) {
     this.relays = new Map(); // url -> { ws, status, queue, pingInterval }
     this.subscriptions = new Map(); // subId -> { filters, relays, callbacks }
     this.connectionTimeout = options.connectionTimeout || 20000; // 20 seconds
     this.pingInterval = options.pingInterval || 30000; // 30 seconds keepalive
+    // ms to skip re-dialing a relay after a failed dial (negative cache).
+    this.retryBackoff = options.retryBackoff || 30000;
+    this.failedRelays = new Map(); // url -> failedAt(ms) of last failed dial
   }
 
   async connect(url) {
+    // Negative cache (NIP-01: one socket per relay, reuse it). Skip a relay
+    // whose dial failed within the last `retryBackoff` ms instead of opening a
+    // brand-new socket on every request — see class doc.
+    const failedAt = this.failedRelays.get(url);
+    if (failedAt !== undefined) {
+      if (Date.now() - failedAt < this.retryBackoff) {
+        const err = new Error(`Relay cooling down: ${url}`);
+        err.cooldown = true;
+        throw err;
+      }
+      this.failedRelays.delete(url);
+    }
     if (this.relays.has(url)) {
       const relay = this.relays.get(url);
       if (relay.status === 'connected') return relay;
@@ -945,32 +1005,51 @@ class RelayPool {
     this.relays.set(url, relay);
 
     return new Promise((resolve, reject) => {
+      let opened = false;
       try {
         relay.ws = new WebSocket(url);
       } catch (err) {
         relay.status = 'failed';
         this.relays.delete(url);
+        this.failedRelays.set(url, Date.now());
         reject(err);
         return;
       }
 
       const timeout = setTimeout(() => {
         relay.status = 'failed';
-        try { relay.ws.close(); } catch (e) {}
+        _safeCloseWs(relay.ws);
         this.relays.delete(url);
+        this.failedRelays.set(url, Date.now());
         reject(new Error(`Connection timeout: ${url}`));
       }, this.connectionTimeout);
 
       relay.ws.onopen = () => {
         clearTimeout(timeout);
         relay.status = 'connected';
+        opened = true;
+        this.failedRelays.delete(url);
+
+        // Replay active subscriptions targeting this relay (NIP-01 REQs die
+        // with the socket; without this a dropped relay silently loses every
+        // standing subscription — e.g. a NIP-46 signer's response listener —
+        // until the caller re-subscribes). Dials stay demand-driven: this only
+        // re-attaches subs when something else re-opened the socket.
+        this.subscriptions.forEach(sub => {
+          if (sub.urls.includes(url)) this._attachSubscription(relay, sub);
+        });
 
         // Start keepalive ping
         relay.pingTimer = setInterval(() => {
           if (relay.ws && relay.ws.readyState === WebSocket.OPEN) {
             try {
-              // Send a REQ with empty filter that returns nothing - acts as ping
-              relay.ws.send(JSON.stringify(['REQ', 'ping_' + Date.now(), { limit: 0 }]));
+              // Keepalive: a limit:0 REQ answers with EOSE only, so the
+              // round-trip traffic itself is the ping. CLOSE it immediately —
+              // otherwise server-side subscriptions accumulate one per
+              // interval and relays with subscription caps drop the socket.
+              const pingId = 'ping_' + Date.now();
+              relay.ws.send(JSON.stringify(['REQ', pingId, { limit: 0 }]));
+              relay.ws.send(JSON.stringify(['CLOSE', pingId]));
             } catch (e) {}
           }
         }, this.pingInterval);
@@ -985,6 +1064,7 @@ class RelayPool {
         if (relay.pingTimer) clearInterval(relay.pingTimer);
         relay.status = 'failed';
         this.relays.delete(url);
+        if (!opened) this.failedRelays.set(url, Date.now());
         reject(new Error(`Connection failed: ${url}`));
         relay.queue.forEach(q => q.reject(err));
         relay.queue = [];
@@ -1014,7 +1094,7 @@ class RelayPool {
     try {
       return await this.connect(url);
     } catch (e) {
-      console.warn(`Relay ${url} failed:`, e.message);
+      if (!e.cooldown) console.debug(`Relay ${url} unavailable:`, e.message);
       return null;
     }
   }
@@ -1054,6 +1134,35 @@ class RelayPool {
       })
     );
     return results;
+  }
+
+  /**
+   * Attach a subscription's message handler to a relay and (re)send its REQ.
+   * Idempotent per socket: a stale handler left over from a previous socket
+   * (or an earlier call for the same socket) is replaced first, so the replay
+   * on reconnect never double-delivers events. Used by `subscribe()` for the
+   * initial attach and by `connect()`'s onopen to replay standing
+   * subscriptions after a socket drop + re-dial.
+   * @private
+   */
+  _attachSubscription(relay, sub) {
+    const url = relay.url;
+    const prev = sub.handlers.get(url);
+    if (prev) relay.messageHandlers.delete(prev);
+    const handler = (data) => {
+      if (data[0] === 'EVENT' && data[1] === sub.id) {
+        sub.callbacks.onEvent?.(data[2], url);
+      } else if (data[0] === 'EOSE' && data[1] === sub.id) {
+        sub.callbacks.onEose?.(url);
+      }
+    };
+    relay.messageHandlers.add(handler);
+    sub.handlers.set(url, handler);
+    try {
+      relay.ws.send(JSON.stringify(['REQ', sub.id, ...sub.filters]));
+    } catch (e) {
+      console.warn(`Failed to send to ${url}:`, e);
+    }
   }
 
   subscribe(urls, filters, callbacks) {
@@ -1099,21 +1208,7 @@ class RelayPool {
       }
 
       sub.connectedCount++;
-      const handler = (data) => {
-        if (data[0] === 'EVENT' && data[1] === subId) {
-          callbacks.onEvent?.(data[2], url);
-        } else if (data[0] === 'EOSE' && data[1] === subId) {
-          callbacks.onEose?.(url);
-        }
-      };
-      relay.messageHandlers.add(handler);
-      sub.handlers.set(url, handler);
-
-      try {
-        relay.ws.send(JSON.stringify(['REQ', subId, ...filters]));
-      } catch (e) {
-        console.warn(`Failed to send to ${url}:`, e);
-      }
+      this._attachSubscription(relay, sub);
     });
 
     return sub;
@@ -1123,10 +1218,11 @@ class RelayPool {
     this.subscriptions.forEach(sub => sub.close());
     this.relays.forEach(relay => {
       if (relay.pingTimer) clearInterval(relay.pingTimer);
-      if (relay.ws) relay.ws.close();
+      _safeCloseWs(relay.ws);
     });
     this.relays.clear();
     this.subscriptions.clear();
+    this.failedRelays.clear();
   }
 }
 
@@ -1351,12 +1447,9 @@ class Nip46Signer extends BaseSigner {
       throw new Error('Saved session is incomplete. Please connect again.');
     }
 
-    // Connect to relays in parallel
-    await Promise.allSettled(
-      this.relays.map(relay => this.pool.connect(relay))
-    );
-
-    // Start listening for responses
+    // Don't block startup on the relay handshake — the pubkey is already known
+    // from the saved session. _startListening() subscribes and connects to the
+    // relays lazily in the background; the signer proves itself on first sign.
     this._startListening();
 
     // Mark as connected optimistically. Web-based signers (nsec.app) run
@@ -1470,7 +1563,11 @@ class Nip46Signer extends BaseSigner {
     if (metadata.name) params.set('name', metadata.name);
     if (metadata.url) params.set('url', metadata.url);
     if (metadata.description) params.set('description', metadata.description);
-    if (metadata.perms) params.set('perms', metadata.perms);
+    // Always request the standard perms so the signer grants sign_event (incl.
+    // kind 27235 = NIP-98 / MNA1 auth) up front. Without this the nostrconnect://
+    // URI carries no perms and the signer establishes a no-signing session, so
+    // every later sign returns "no permission". Callers may override via metadata.perms.
+    params.set('perms', metadata.perms || NIP46_DEFAULT_PERMS);
 
     return `nostrconnect://${localPubkeyHex}?${params.toString()}`;
   }
@@ -3113,35 +3210,55 @@ async function fetchProfile(pubkeyHex, relays, timeoutMs = 5000) {
 
 /** @private */
 const _NUI_PROFILE_PREFIX = 'nostr_profile_';
+/** @private — app-supplied overrides; a separate slot the kind:0 fetch never touches. */
+const _NUI_PROFILE_OVERRIDE_PREFIX = 'nostr_profile_override_';
 /** @private */
 const _NUI_PROFILE_TTL = 24 * 60 * 60 * 1000;
 
-/**
- * Read a Nostr profile from the localStorage cache.
- * Returns null if missing or older than 24 h.
- * @param {string} pubkeyHex
- * @returns {object|null}
- */
-function getCachedProfile(pubkeyHex) {
+/** @private — read the kind:0 slot, honouring the 24 h TTL. */
+function _nuiReadKind0(pubkeyHex) {
   try {
     const raw = localStorage.getItem(_NUI_PROFILE_PREFIX + pubkeyHex);
-    if (!raw) {
-      _nuiLog('getCachedProfile MISS key:', pubkeyHex.slice(0, 8) + '…');
-      return null;
-    }
+    if (!raw) return null;
     const { ts, profile } = JSON.parse(raw);
-    const age = Math.round((Date.now() - ts) / 1000);
-    if (Date.now() - ts > _NUI_PROFILE_TTL) {
-      _nuiLog('getCachedProfile EXPIRED (age ' + age + 's) key:', pubkeyHex.slice(0, 8) + '…');
-      return null;
-    }
-    _nuiLog('getCachedProfile HIT (age ' + age + 's):', profile?.display_name || profile?.name || '(no name)', 'key:', pubkeyHex.slice(0, 8) + '…');
-    return profile;
+    if (Date.now() - ts > _NUI_PROFILE_TTL) return null;
+    return profile || null;
+  } catch { return null; }
+}
+
+/** @private — read the app-supplied override slot (no TTL; the app is authoritative). */
+function _nuiReadOverride(pubkeyHex) {
+  try {
+    const raw = localStorage.getItem(_NUI_PROFILE_OVERRIDE_PREFIX + pubkeyHex);
+    if (!raw) return null;
+    const { profile } = JSON.parse(raw);
+    return profile || null;
   } catch { return null; }
 }
 
 /**
- * Write a Nostr profile to the localStorage cache.
+ * Read a Nostr profile from the localStorage cache.
+ * Merges the kind:0 slot (24 h TTL) with any app-supplied override, the override
+ * winning field-by-field. Returns null only when neither slot has data.
+ * @param {string} pubkeyHex
+ * @returns {object|null}
+ */
+function getCachedProfile(pubkeyHex) {
+  const kind0    = _nuiReadKind0(pubkeyHex);
+  const override = _nuiReadOverride(pubkeyHex);
+  if (!kind0 && !override) {
+    _nuiLog('getCachedProfile MISS key:', pubkeyHex.slice(0, 8) + '…');
+    return null;
+  }
+  const merged = { ...(kind0 || {}), ...(override || {}) };
+  _nuiLog('getCachedProfile HIT:', merged.display_name || merged.name || '(no name)',
+    override ? '(override)' : '', 'key:', pubkeyHex.slice(0, 8) + '…');
+  return merged;
+}
+
+/**
+ * Write a Nostr profile to the localStorage kind:0 cache slot.
+ * Does not touch app overrides written via setProfileOverride.
  * @param {string} pubkeyHex
  * @param {object} profile
  */
@@ -3152,6 +3269,27 @@ function setCachedProfile(pubkeyHex, profile) {
       JSON.stringify({ ts: Date.now(), profile })
     );
     _nuiLog('setCachedProfile key:', pubkeyHex.slice(0, 8) + '…', '| name:', profile?.display_name || profile?.name || '(none)');
+  } catch {}
+}
+
+/**
+ * Write (or clear) an app-supplied profile override. The override slot is kept
+ * separate from the kind:0 slot the background relay fetch writes, so an
+ * app-chosen name/avatar survives re-login and wins at render time. Pass a
+ * falsy `profile` to remove the override.
+ * @param {string} pubkeyHex
+ * @param {object|null} profile  Partial kind:0-shaped profile, or null to clear.
+ */
+function setProfileOverride(pubkeyHex, profile) {
+  try {
+    const key = _NUI_PROFILE_OVERRIDE_PREFIX + pubkeyHex;
+    if (!profile) {
+      localStorage.removeItem(key);
+      _nuiLog('setProfileOverride CLEAR key:', pubkeyHex.slice(0, 8) + '…');
+      return;
+    }
+    localStorage.setItem(key, JSON.stringify({ ts: Date.now(), profile }));
+    _nuiLog('setProfileOverride key:', pubkeyHex.slice(0, 8) + '…', '| name:', profile?.display_name || profile?.name || '(none)');
   } catch {}
 }
 
@@ -3234,6 +3372,7 @@ function _nuiGetStyles() {
 .nui-guest-section{text-align:center;padding-top:12px;border-top:1px solid var(--nui-border,#27272a);margin-top:12px}
 .nui-guest-btn{background:none;border:none;color:var(--nui-muted,#71717a);font-size:12px;cursor:pointer;transition:color .15s;font-family:inherit}
 .nui-guest-btn:hover{color:var(--nui-primary,#6366f1)}
+.nui-guest-hint{margin:6px auto 0;font-size:11px;color:var(--nui-muted,#71717a);line-height:1.4;max-width:300px}
 .nui-btn{padding:10px 18px;border-radius:8px;border:none;font-size:14px;cursor:pointer;transition:all .15s;font-family:inherit}
 .nui-btn-primary{background:var(--nui-primary,#6366f1);color:#fff}
 .nui-btn-primary:hover{background:var(--nui-primary-hover,#4f46e5)}
@@ -3312,6 +3451,8 @@ class NostrLoginUI {
    * @param {boolean}     [options.useHistory=true]
    * @param {boolean}     [options.allowCamera=true]
    * @param {boolean}     [options.allowDeepLink=true]
+   * @param {string}      [options.guestLabel]    HTML for the guest-mode button (default: "Just trying things out? <strong>Use Guest Mode</strong>")
+   * @param {string}      [options.guestHint]     Optional muted hint line rendered under the guest button
    * @param {boolean}     [options.showHeader=true]   Mount a fixed app-header bar when connected; set false to suppress (e.g. host page renders its own nav chip)
    * @param {Function}    [options.onHeader]      (slotEl) => void — called once when the header is first created; populate slotEl with custom nav content
  * @param {Function}    [options.onConnected]  (pubkey, profile) => void — fired immediately with cached profile (may be null), again once live profile resolves
@@ -3328,6 +3469,8 @@ class NostrLoginUI {
     this._useHistory     = options.useHistory     !== false;
     this._allowCamera    = options.allowCamera    !== false;
     this._allowDeepLink  = options.allowDeepLink  !== false;
+    this._guestLabel     = options.guestLabel     || `Just trying things out? <strong>Use Guest Mode</strong>`;
+    this._guestHint      = options.guestHint      || '';
     this._showHeader     = options.showHeader     !== false;
     this._onHeaderCb     = options.onHeader       || null;
     this._onConnectedCb  = options.onConnected    || null;
@@ -3427,7 +3570,8 @@ class NostrLoginUI {
         `<div class='nui-group-label'>Connect with Nostr signer</div>` +
         `<div class='nui-connect-opts'></div>` +
         `<div class='nui-guest-section nui-hidden'>` +
-          `<button class='nui-guest-btn' data-a='doGuest'>Just trying things out? <strong>Use Guest Mode</strong></button>` +
+          `<button class='nui-guest-btn' data-a='doGuest'>${this._guestLabel}</button>` +
+          (this._guestHint ? `<p class='nui-guest-hint'>${this._guestHint}</p>` : ``) +
         `</div>` +
       `</div>` +
       `<div class='nui-view-paste nui-hidden'>` +
@@ -4226,6 +4370,7 @@ export {
   fetchProfile,
   getCachedProfile,
   setCachedProfile,
+  setProfileOverride,
 
   // Profile rendering helpers
   nuiAvatarHtml,

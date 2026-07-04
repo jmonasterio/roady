@@ -163,6 +163,12 @@ const MAX_DEVICES_PER_MEMBER = 5;
         syncError: null,
         syncRetryCount: 0,
 
+        // Sync status panel: last few errors (newest first), open state,
+        // and the queued-writes count shown when the dot is clicked.
+        syncErrorLog: [],
+        showSyncPanel: false,
+        pendingCount: 0,
+
         // Confirmation dialog state
         confirmationDialog: {
             isOpen: false,
@@ -393,6 +399,8 @@ const MAX_DEVICES_PER_MEMBER = 5;
 
             } catch (e) {
                 console.error('❌ Tenant initialization failed:', e);
+                this._logSyncError('Tenant init failed: ' + (e?.message || 'unknown') +
+                    ' — bands may load but data cannot sync');
                 if (this._isAuthDenied(e)) {
                     // Permanent until the user grants signing access — don't
                     // poll the signer (it just re-prompts / rate-limits).
@@ -433,9 +441,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
             // 5. Setup Sync before first render so the listener is attached
             //    before any change event can fire, and sync has a head start.
             this.setupSyncListeners();
-            if (this.options.mycouchBaseUrl) {
-                this.enableSync();
-            }
+            this.enableSync();
 
             // Initial render from local PouchDB (may be empty on new browser;
             // db-sync-change will reload once remote data arrives).
@@ -478,23 +484,26 @@ const MAX_DEVICES_PER_MEMBER = 5;
             if (mine) {
                 this.nostrDisplayName = mine.name;
                 this.nostrAvatarHtml = window.nuiAvatarHtml ? window.nuiAvatarHtml({ name: mine.name }, pk, 28) : '';
-                // Guest keys have no kind-0, so the login card would label the
-                // recent-connection row "Guest Mode". Seed the library's profile
-                // cache with the roster identity so the card (and connected
-                // header) shows "Name · Role" instead. Real kind-0 profiles are
-                // never overwritten (guarded), and the 24h TTL self-heals if the
-                // roster link is later removed.
-                if (!this._hasNostrProfile) {
-                    try { window.setCachedProfile?.(pk, { name: this.nostrDisplayName }); } catch (_) {}
-                }
+                // Persist the in-band identity as an app override so the login
+                // card, recent-connection row and connected header all show the
+                // roster name + letter avatar — even for keys that also have a
+                // kind-0 profile. The override lives in its own localStorage slot,
+                // wins over kind-0 at render time, and is never clobbered by the
+                // background relay fetch. picture:'' forces the letter avatar to
+                // match the nav (deliberately no nostr picture for in-band roles).
+                try { window.setProfileOverride?.(pk, { display_name: mine.name, picture: '' }); } catch (_) {}
             } else if (this._hasNostrProfile) {
                 this.nostrDisplayName = window.nuiDisplayName
                     ? window.nuiDisplayName(this._nostrProfile, this.nostrNpub)
                     : this.nostrNpub.slice(0, 20) + '\u2026';
                 this.nostrAvatarHtml = window.nuiAvatarHtml ? window.nuiAvatarHtml(this._nostrProfile, pk, 28) : '';
+                // No roster link → drop any stale override so a removed membership
+                // self-heals back to the real kind-0 identity.
+                if (pk) { try { window.setProfileOverride?.(pk, null); } catch (_) {} }
             } else {
                 this.nostrDisplayName = 'You';
                 this.nostrAvatarHtml = window.nuiAvatarHtml ? window.nuiAvatarHtml(null, pk, 28) : '';
+                if (pk) { try { window.setProfileOverride?.(pk, null); } catch (_) {} }
             }
         },
 
@@ -543,6 +552,9 @@ const MAX_DEVICES_PER_MEMBER = 5;
         // and recover automatically. A permission denial is terminal (needs a
         // fresh handshake); anything else is transient → banner + backoff retry.
         _handleSignerError(err) {
+            this._logSyncError(this._isAuthDenied(err)
+                ? 'Signer denied signing permission — reconnect and approve'
+                : 'Signer: ' + (err?.message || 'unreachable'));
             if (this._isAuthDenied(err)) {
                 this._stopRetry();
                 this.signerOffline = false;
@@ -789,12 +801,11 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 }
             }
 
-            // Update sync when URL changes (sync uses mycouchBaseUrl)
-            if (this.options.mycouchBaseUrl && this.options.mycouchBaseUrl.trim()) {
-                this.enableSync();
-            } else {
-                this.disableSync();
-            }
+            // Ensure sync runs against the resolved base. Empty option =
+            // same-origin (/__api__), NOT "disabled" — enableSync is idempotent
+            // and restarts itself when the base actually changed.
+            window.Auth.setMycouchBaseUrl(this.options.mycouchBaseUrl);
+            this.enableSync();
         },
 
         async loadSessionToken() {
@@ -821,25 +832,29 @@ const MAX_DEVICES_PER_MEMBER = 5;
 
         // Sync methods
         async enableSync() {
-            console.log('📡 enableSync called with mycouchBaseUrl:', this.options.mycouchBaseUrl);
-            
-            if (!this.options.mycouchBaseUrl) {
-                console.warn('⚠️ enableSync: no mycouchBaseUrl in options');
-                return;
-            }
-            
-            // Guard against Sync not being loaded
+            // Under MNA1 the app always syncs to the resolved MyCouch base
+            // (an empty options URL = same-origin via /__api__). NEVER gate
+            // startup on the raw option being non-empty, or the default
+            // deployment never syncs: the outbox grows unbounded while the
+            // status sits at 'idle' with no error to show.
             if (!window.Sync) {
                 console.warn('⚠️ Sync module not loaded yet, deferring sync setup');
                 setTimeout(() => this.enableSync(), 100);
                 return;
             }
 
-            this.syncError = null;
-            // Construct sync URL from MyCouch proxy base URL
-            // Determine database name based on environment
             const dbName = window.location.hostname === 'localhost' ? 'roady-staging' : 'roady';
-            const syncUrl = `${window.Auth.getMycouchBaseUrl()}/${dbName}`;
+            const base = window.Auth.getMycouchBaseUrl();
+            const syncUrl = `${base}/${dbName}`;
+
+            // Idempotent: already live against this base → leave it alone so
+            // repeated init()/saveOptions() calls don't stack WebSockets.
+            const st = window.Sync.getSyncStatus();
+            if ((st === 'active' || st === 'connecting') && window.Sync.url === base) return;
+            // Base changed under a live socket → tear the old one down first.
+            if (window.Sync.url && window.Sync.url !== base) window.Sync.cancelSync();
+
+            this.syncError = null;
             console.log('📡 Calling Sync.setupSync with:', syncUrl);
             
             // Non-blocking sync setup with automatic retry
@@ -911,10 +926,15 @@ const MAX_DEVICES_PER_MEMBER = 5;
 
 
         setupSyncListeners() {
-            window.addEventListener('db-sync-change', (e) => {
+            const refreshStatus = () => {
                 this.syncStatus = window.Sync ? Sync.getSyncStatus() : 'idle';
-                // Reload bands first — they may have just synced in for the first time.
-                // Then re-sync DB tenant in case the selection changed, then reload data.
+                this._refreshPendingCount();
+            };
+            window.addEventListener('db-sync-change', (e) => {
+                refreshStatus();
+                // Reload bands first — they may have just synced in for the first
+                // time. Then re-sync DB tenant in case the selection changed,
+                // then reload data.
                 this.loadBands().then(() => {
                     if (this.currentBandTenantId) DB.setTenant(this.currentBandTenantId);
                     this.loadData();
@@ -922,20 +942,26 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 });
             });
 
-            window.addEventListener('db-sync-error', (e) => {
-                this.syncError = `Sync error: ${e.detail?.error?.message || e.detail?.code || 'Unknown error'}`;
-                this.syncStatus = window.Sync ? Sync.getSyncStatus() : 'idle';
-            });
+            window.addEventListener('db-sync-active', refreshStatus);
+            window.addEventListener('db-sync-paused', refreshStatus);
 
-            window.addEventListener('db-sync-paused', (e) => {
-                this.syncStatus = window.Sync ? Sync.getSyncStatus() : 'idle';
+            window.addEventListener('db-sync-error', (e) => {
+                // Detail-less errors come from _setStatus('error'); the specific
+                // failure points dispatch a coded/detailed error we log here.
+                if (e.detail) {
+                    const msg = this._syncErrorText(e.detail);
+                    this._logSyncError(msg);
+                    this.syncError = msg;
+                }
+                refreshStatus();
             });
 
             // Mid-session signing/network failure during a sync push — surface
             // the offline state (banner + auto-retry) instead of silently
-            // stalling the outbox.
+            // stalling the outbox. _handleSignerError logs the error.
             window.addEventListener('db-sync-offline', (e) => {
                 this._handleSignerError(e.detail?.error || new Error('sync unavailable'));
+                refreshStatus();
             });
 
             // A push succeeded — signing works again; clear the offline state.
@@ -944,10 +970,67 @@ const MAX_DEVICES_PER_MEMBER = 5;
                     this._stopRetry();
                     this.signerOffline = false;
                 }
+                this.syncError = null;
+                refreshStatus();
             });
         },
 
+        // Human-readable text for a db-sync-error detail payload.
+        _syncErrorText(detail) {
+            const map = {
+                ws_sign_failed: 'Could not sign sync connection (signer offline or rate-limited)',
+                reauth_failed: 'Could not re-sign sync connection (signer offline)',
+                auth_rejected: 'Sync server rejected auth',
+                outbox_dropped: 'A change exceeded retries and was dropped',
+                forbidden: 'Server refused a change (not a member of this band)',
+                unauthorized: 'Sync unauthorized',
+            };
+            const base = map[detail.code] || detail.error?.message || detail.code || 'Sync error';
+            const extra = detail.reason ? ` — ${detail.reason}`
+                : (detail.doc_id ? ` (${detail.doc_id})` : '');
+            return base + extra;
+        },
+
+        // Keep the last few sync errors for the status-dot panel. Newest first.
+        _logSyncError(msg) {
+            if (!msg) return;
+            const entry = { ts: Date.now(), msg: String(msg) };
+            // Skip a consecutive duplicate (same message within 3s) so a tight
+            // retry loop doesn't flood the panel.
+            const last = this.syncErrorLog[0];
+            if (last && last.msg === entry.msg && (entry.ts - last.ts) < 3000) return;
+            this.syncErrorLog.unshift(entry);
+            if (this.syncErrorLog.length > 10) this.syncErrorLog.length = 10;
+        },
+
+        clearSyncErrors() {
+            this.syncErrorLog = [];
+            this.syncError = null;
+        },
+
+        formatSyncTime(ts) {
+            try { return new Date(ts).toLocaleTimeString(); }
+            catch (_) { return ''; }
+        },
+
+        _refreshPendingCount() {
+            try {
+                const ob = DB.db?.outbox;
+                if (ob) ob.count().then(n => { this.pendingCount = n; }).catch(() => {});
+            } catch (_) {}
+        },
+
+        // Dot colour: red when errored or the signer is offline, yellow while
+        // syncing, green when connected, grey when idle.
+        syncDotClass() {
+            if (this.syncStatus === 'error' || this.signerOffline) return 'sync-error';
+            if (this.syncStatus === 'active') return 'sync-active';
+            if (this.syncStatus === 'paused') return 'sync-paused';
+            return 'sync-idle';
+        },
+
         getSyncStatusText() {
+            if (this.signerOffline) return 'Disconnected';
             if (this.syncStatus === 'active') return 'Syncing...';
             if (this.syncStatus === 'error') return 'Sync Error';
             if (this.syncStatus === 'paused') return 'Connected';
@@ -973,10 +1056,8 @@ const MAX_DEVICES_PER_MEMBER = 5;
             this.isLoading = false;
             this.setupSyncListeners();
 
-            // Setup sync if URL is configured
-            if (this.options.couchDbUrl) {
-                this.enableSync();
-            }
+            // Sync always runs against the resolved MyCouch base.
+            this.enableSync();
         },
 
         async switchBand() {

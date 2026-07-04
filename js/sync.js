@@ -27,6 +27,7 @@ window.Sync = {
     DRAIN_INTERVAL_MS: 800,
     DRAIN_BATCH: 20,
     OUTBOX_MAX_ATTEMPTS: 10,
+    OFFLINE_RETRY_MS: 20000,
 
     // --- Poll fallback --------------------------------------------------
     pollTimer: null,
@@ -120,6 +121,16 @@ window.Sync = {
             envelope = await window.Auth.signMna1(signUrl, 'GET');
         } catch (e) {
             console.error('[Sync] envelope sign failed:', e);
+            // Surface it: without a signed envelope the WS never connects and
+            // catch-up never runs, so the local DB stays empty (no data).
+            window.dispatchEvent(new CustomEvent('db-sync-error', {
+                detail: { code: 'ws_sign_failed', error: e },
+            }));
+            this._setStatus('error');
+            // Sign failure = remote signer offline or rate-limited; fast
+            // retries each cost another sign_event and make it worse.
+            // Jump the ladder to the 30s cap.
+            this.reconnectAttempts = 8;
             this._scheduleReconnect();
             return;
         }
@@ -162,6 +173,9 @@ window.Sync = {
             // 4401 = auth_failed / pubkey_changed (closed deliberately by hub)
             if (ev.code === 4401) {
                 console.error('[Sync] WS auth rejected (code 4401):', ev.reason);
+                window.dispatchEvent(new CustomEvent('db-sync-error', {
+                    detail: { code: 'auth_rejected', reason: ev.reason },
+                }));
                 this._setStatus('error');
             } else {
                 this._setStatus('paused');
@@ -231,6 +245,14 @@ window.Sync = {
                     this._send({ type: 'reauth', auth: reauth });
                 } catch (e) {
                     console.error('[Sync] reauth failed:', e);
+                    window.dispatchEvent(new CustomEvent('db-sync-error', {
+                        detail: { code: 'reauth_failed', error: e },
+                    }));
+                    // Sign failure = signer offline/rate-limited. The hub will
+                    // close the socket, triggering _scheduleReconnect via
+                    // onclose — pre-set the ladder to the 30s cap so we don't
+                    // spam the signer with fast re-sign attempts.
+                    this.reconnectAttempts = 8;
                 }
                 break;
             }
@@ -324,17 +346,21 @@ window.Sync = {
     async _drainBatch() {
         if (this.closing) return;
         let drained = 0;
+        let offline = false;
         try {
             if (!window.Auth?.isAuthenticated()) return;
             const entries = await DB.outboxNext(this.DRAIN_BATCH);
             for (const entry of entries) {
-                const ok = await this._drainEntry(entry);
-                if (ok) drained++;
+                const r = await this._drainEntry(entry);
+                if (r === 'offline') { offline = true; break; }
+                if (r) drained++;
             }
         } finally {
-            // If there's clearly more to do, retry promptly; otherwise
+            // Offline? Probe again at a gentle cadence (every attempt costs a
+            // signer round-trip). More work queued? Retry promptly. Otherwise
             // back off to the steady-state interval.
-            const next = drained === this.DRAIN_BATCH ? 50 : this.DRAIN_INTERVAL_MS;
+            const next = offline ? this.OFFLINE_RETRY_MS
+                : drained === this.DRAIN_BATCH ? 50 : this.DRAIN_INTERVAL_MS;
             this._scheduleDrain(next);
         }
     },
@@ -367,16 +393,22 @@ window.Sync = {
                 body: JSON.stringify(payload),
             });
         } catch (e) {
-            // Network failure — requeue without bumping past max.
+            // Transport/signing failure (signer timeout, network down). NOT a
+            // poison entry — never count it toward OUTBOX_MAX_ATTEMPTS, or an
+            // outage silently DROPS queued writes the banner promised to keep.
+            // Requeue untouched; the app surfaces the offline banner and this
+            // drain loop keeps probing at OFFLINE_RETRY_MS.
             console.debug('[Sync] PUT transport failed', e.message);
-            await DB.db.outbox.update(entry.id, {
-                status: 'pending',
-                attempts: (entry.attempts || 0) + 1,
-            });
-            return false;
+            await DB.db.outbox.update(entry.id, { status: 'pending' });
+            window.dispatchEvent(new CustomEvent('db-sync-offline', {
+                detail: { error: e },
+            }));
+            return 'offline';
         }
 
         if (res.ok) {
+            // A signed PUT reached the server — signing works; clear offline UI.
+            window.dispatchEvent(new CustomEvent('db-sync-online'));
             const json = await res.json().catch(() => ({}));
             if (json.merged && json.doc) {
                 // Server performed a 3-way merge; the stored body differs from

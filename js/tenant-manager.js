@@ -18,6 +18,11 @@
 //   { _id, tenant_id, tenantId, name, role, application_id,
 //     owner_user_hash, auto_created, version, updated_at, type:'tenant' }
 
+// _fetchMyTenants success/failure cache TTL. One fetch == one remote
+// sign_event RPC (NIP-46), so absorb startup's duplicate reads and
+// fast failure-retry loops instead of re-signing each time.
+const TENANTS_CACHE_TTL_MS = 10000;
+
 class TenantManager {
     constructor(mycouchBaseUrl = null) {
         this.mycouchBaseUrl = mycouchBaseUrl || this._inferMycouchUrl();
@@ -34,6 +39,16 @@ class TenantManager {
         this.localUserDoc = null;
 
         this.changeCallbacks = [];
+
+        // _fetchMyTenants dedupe/cache. Every fetch costs one remote
+        // sign_event RPC (NIP-46), so concurrent callers share one
+        // in-flight promise and both outcomes are cached for
+        // TENANTS_CACHE_TTL_MS. Mutations call _invalidateTenantsCache().
+        this._tenantsInflight = null;
+        this._tenantsCache = null;
+        this._tenantsFetchedAt = 0;
+        this._tenantsFailedAt = 0;
+        this._tenantsFailedErr = null;
 
         // Removed under MNA1: usersDb / tenantsDb (PouchDB), poller handles,
         // sequence cursors. The WS hub + outbox in sync.js own data freshness.
@@ -147,6 +162,7 @@ class TenantManager {
         // Server returns the bare Tenant; first-creator is implicitly owner.
         if (!t.role) t.role = 'owner';
         this._upsertIntoList(t);
+        this._invalidateTenantsCache();
         return t;
     }
 
@@ -193,6 +209,7 @@ class TenantManager {
             const text = await res.text().catch(() => '');
             throw new Error(`deleteTenant ${res.status}: ${text}`);
         }
+        this._invalidateTenantsCache();
         this.tenantList = this.tenantList.filter(
             t => t._id !== tid && t.tenant_id !== tid,
         );
@@ -203,15 +220,29 @@ class TenantManager {
         this._notify();
     }
 
-    async leaveTenant(tenantId) {
+    // Remove a member from a tenant by raw `user_hash` (sha256(pubkey),
+    // lowercase hex — NO `user_` prefix; the server keys `tenant_members` on
+    // the bare hash). Defensively strips a `user_` prefix if a caller passes a
+    // UI-shaped id. Owner/admin only server-side (403 otherwise).
+    async removeMemberByHash(tenantId, userHash) {
         const tid = _internalId(tenantId);
-        const userPath = `user_${this.currentUserHash}`;
-        const url = `${this._base()}/api/tenants/${encodeURIComponent(tid)}/members/${encodeURIComponent(userPath)}`;
+        const hash = String(userHash || '').replace(/^user_/, '');
+        if (!hash) throw new Error('removeMemberByHash: empty userHash');
+        const url = `${this._base()}/api/tenants/${encodeURIComponent(tid)}/members/${encodeURIComponent(hash)}`;
         const res = await window.Auth.fetchWithAuth(url, { method: 'DELETE' });
         if (!res.ok && res.status !== 204) {
             const text = await res.text().catch(() => '');
-            throw new Error(`leaveTenant ${res.status}: ${text}`);
+            throw new Error(`removeMemberByHash ${res.status}: ${text}`);
         }
+        this._invalidateTenantsCache();
+        return true;
+    }
+
+    async leaveTenant(tenantId) {
+        const tid = _internalId(tenantId);
+        // `currentUserHash` is the raw hash; removeMemberByHash builds the path.
+        await this.removeMemberByHash(tid, this.currentUserHash);
+        this._invalidateTenantsCache();
         this.tenantList = this.tenantList.filter(
             t => t._id !== tid && t.tenant_id !== tid,
         );
@@ -229,6 +260,7 @@ class TenantManager {
         if (!raw) return null;
         const t = _normalize(raw);
         this._upsertIntoList(t);
+        this._invalidateTenantsCache();
         this._notify();
         return t;
     }
@@ -319,16 +351,68 @@ class TenantManager {
     // Backwards-compat alias for callers that still inspect getMycouchUrl().
     getMycouchUrl() { return this._inferMycouchUrl(); }
 
+    // One GET /api/my-tenants == one remote sign_event RPC, so be stingy:
+    // concurrent callers share the in-flight promise, and the last success
+    // OR failure is replayed for TENANTS_CACHE_TTL_MS before signing again.
     async _fetchMyTenants() {
+        const now = Date.now();
+        if (this._tenantsInflight) return this._tenantsInflight;
+        if (this._tenantsCache && (now - this._tenantsFetchedAt) < TENANTS_CACHE_TTL_MS) {
+            return this._tenantsCache.slice();
+        }
+        if (this._tenantsFailedErr !== null && (now - this._tenantsFailedAt) < TENANTS_CACHE_TTL_MS) {
+            throw new Error(this._tenantsFailedErr);
+        }
+        const inflight = (async () => {
+            try {
+                const list = await this._fetchMyTenantsInner();
+                // Only record if a mutation hasn't invalidated us mid-flight.
+                if (this._tenantsInflight === inflight) {
+                    this._tenantsCache = list;
+                    this._tenantsFetchedAt = Date.now();
+                    this._tenantsFailedAt = 0;
+                    this._tenantsFailedErr = null;
+                }
+                return list;
+            } catch (e) {
+                if (this._tenantsInflight === inflight) {
+                    this._tenantsFailedAt = Date.now();
+                    this._tenantsFailedErr = e && e.message ? e.message : String(e);
+                }
+                throw e;
+            } finally {
+                if (this._tenantsInflight === inflight) this._tenantsInflight = null;
+            }
+        })();
+        this._tenantsInflight = inflight;
+        return inflight;
+    }
+
+    // Drop cached results AND any in-flight fetch (its response predates
+    // the mutation) so the next _fetchMyTenants() hits the network.
+    _invalidateTenantsCache() {
+        this._tenantsInflight = null;
+        this._tenantsCache = null;
+        this._tenantsFetchedAt = 0;
+        this._tenantsFailedAt = 0;
+        this._tenantsFailedErr = null;
+    }
+
+    // Raw fetch — always signs and hits the network. Callers use
+    // _fetchMyTenants() above.
+    async _fetchMyTenantsInner() {
         const url = `${this._base()}/api/my-tenants`;
+        // Sign the request first — bounded by the signer's own RPC timeout. Web
+        // signers (nsec.app) can take several seconds to wake, so the abort timer
+        // below must cover only the HTTP round-trip, not signer wake time.
+        // Otherwise a slow-but-working sign trips the abort and is misreported as
+        // "can't reach signer" (DOMException: signal is aborted without reason).
+        const authed = await window.Auth.authenticatedFetch(url, { method: 'GET' });
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000);
+        const timer = setTimeout(() => controller.abort(), 8000);
         let res;
         try {
-            res = await window.Auth.fetchWithAuth(url, {
-                method: 'GET',
-                signal: controller.signal,
-            });
+            res = await fetch(url, { ...authed, signal: controller.signal });
         } finally {
             clearTimeout(timer);
         }

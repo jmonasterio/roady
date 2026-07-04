@@ -69,6 +69,14 @@ window.Auth = {
         return await _sha256Hex(p.toLowerCase());
     },
 
+    // sha256(pubkey_hex_lowercase) for an *arbitrary* pubkey — the tenant
+    // membership id (`user_hash`) the server keys on. `getUserHash()` covers
+    // the active key; this covers any roster member's key for eviction.
+    async hashPubkey(pubkeyHex) {
+        if (!pubkeyHex) return null;
+        return await _sha256Hex(String(pubkeyHex).toLowerCase());
+    },
+
     async waitForAuth(maxWait = 30000) {
         const start = Date.now();
         while (!this.isAuthenticated() && Date.now() - start < maxWait) {
@@ -129,13 +137,26 @@ window.Auth = {
         if (bytes && bytes.length > 0) {
             tags.push(['payload', await _sha256HexBytes(bytes)]);
         }
-        const event = {
-            kind: 27235,
-            content: '',
-            tags,
-            created_at: Math.floor(Date.now() / 1000),
-        };
-        const signed = await this._auth.sign(event);
+        // Serialize sign_event RPCs — NIP-46 remote signers (nsec.app)
+        // rate-limit, and concurrent signs at startup trip
+        // "Signer did not respond to sign_event". Chain onto the previous
+        // sign; build the event *inside* the queued step so `created_at`
+        // reflects when the sign actually starts (envelopes have a
+        // server-side freshness window — a timestamp minted at enqueue
+        // time would go stale behind a slow sign).
+        const step = _signQueue.then(async () => {
+            const event = {
+                kind: 27235,
+                content: '',
+                tags,
+                created_at: Math.floor(Date.now() / 1000),
+            };
+            return await this._auth.sign(event);
+        });
+        // Keep the queue alive when a step rejects; the caller below
+        // still receives the real rejection via `await step`.
+        _signQueue = step.catch(() => {});
+        const signed = await step;
         // btoa is binary-safe for the ASCII JSON produced here. No
         // non-Latin-1 characters survive the JSON serialization of an
         // event (pubkey, sig, ids are all hex; tags are ASCII).
@@ -189,6 +210,9 @@ window.Auth = {
 // ============================================================
 // Helpers — kept module-local; no need to leak onto window.
 // ============================================================
+
+// At most one NIP-46 sign_event RPC in flight at a time — see signMna1.
+let _signQueue = Promise.resolve();
 
 function _bodyBytes(body) {
     if (body == null) return null;
