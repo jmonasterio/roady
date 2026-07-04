@@ -28,13 +28,13 @@
     <link rel="stylesheet" href="css/styles.css?v=20260703a">
     <script src="https://cdn.jsdelivr.net/npm/dexie@4.0.10/dist/dexie.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <script>window.ROADY_BUILD = '20260704d'; // bump together with the ?v= busters below</script>
+    <script>window.ROADY_BUILD = '20260704e'; // bump together with the ?v= busters below</script>
     <script src="js/dlog.js?v=20260704d"></script>
     <script src="js/auth.js?v=20260704c"></script>
     <script src="js/sync.js?v=20260704c"></script>
     <script src="js/db.js?v=20260704c"></script>
     <script src="js/tenant-manager.js?v=20260704c"></script>
-    <script src="js/app.js?v=20260704d"></script>
+    <script src="js/app.js?v=20260704e"></script>
 
 
     <!-- Service Worker Registration -->
@@ -129,6 +129,9 @@
                                 <div style="display:flex;gap:0.4rem;margin-bottom:0.4rem;">
                                     <button type="button" class="secondary outline" style="margin:0;padding:0.2rem 0.5rem;font-size:0.75rem;"
                                         @click="copyDebugLog()" x-text="debugLogCopied ? 'Copied!' : 'Copy'"></button>
+                                    <button type="button" class="secondary" style="margin:0;padding:0.2rem 0.5rem;font-size:0.75rem;"
+                                        :aria-busy="debugLogSending" @click="sendDebugLog()"
+                                        x-text="debugLogSending ? 'Sending…' : 'Send to server'"></button>
                                     <button type="button" class="secondary outline" style="margin:0;padding:0.2rem 0.5rem;font-size:0.75rem;"
                                         @click="refreshDebugLog()">Refresh</button>
                                     <button type="button" class="secondary outline" style="margin:0;padding:0.2rem 0.5rem;font-size:0.75rem;"

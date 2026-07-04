@@ -173,6 +173,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
         showDebugLog: false,
         debugLogText: '',
         debugLogCopied: false,
+        debugLogSending: false,
 
         // Confirmation dialog state
         confirmationDialog: {
@@ -1034,6 +1035,44 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 // Clipboard API needs https + permission; on failure the user
                 // can still long-press-select the visible text.
                 this.showSnackbar('Copy failed — long-press the log text to select it', 'error');
+            }
+        },
+
+        // Upload the on-device log to the backend as an auth-log event
+        // (action 'debug_log'), MNA1-signed so it's attributed to this pubkey
+        // and visible in couch-sitter. Needs a live signer + link — that's the
+        // accepted tradeoff; Copy remains the offline fallback.
+        async sendDebugLog() {
+            if (this.debugLogSending) return;
+            this.refreshDebugLog();
+            this.debugLogSending = true;
+            try {
+                const ua = (navigator.userAgent || '').slice(0, 120);
+                const body = JSON.stringify({
+                    action: 'debug_log',
+                    status: this.signerOffline ? 'failed' : 'success',
+                    endpoint: `build ${window.ROADY_BUILD || '?'} — ${ua}`,
+                    detail: this.debugLogText.slice(0, 100000),
+                });
+                const url = `${window.Auth.getMycouchBaseUrl()}/api/auth-logs`;
+                const res = await window.Auth.fetchWithAuth(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body,
+                });
+                if (res.ok) {
+                    this.showSnackbar('Log uploaded — visible in couch-sitter');
+                    window.DLog?.push('app', 'debug log uploaded to server');
+                } else {
+                    const t = await res.text().catch(() => '');
+                    this.showSnackbar(`Upload failed (${res.status}) — use Copy`, 'error');
+                    window.DLog?.push('app', `debug log upload failed ${res.status} ${t}`);
+                }
+            } catch (e) {
+                this.showSnackbar('Upload failed (offline?) — use Copy', 'error');
+                window.DLog?.push('app', `debug log upload error ${e?.message || e}`);
+            } finally {
+                this.debugLogSending = false;
             }
         },
 
