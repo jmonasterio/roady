@@ -2446,6 +2446,23 @@ class NostrAuth {
     }
 
     if (account.type === 'nip46' && account.savedNip46) {
+      // Prefer a local NIP-07 extension holding the SAME key — instant local
+      // signing instead of a flaky relay round-trip to the remote signer. A
+      // saved bunker/Amber session would otherwise be restored even on a
+      // machine whose extension can sign directly (slow + failure-prone).
+      if (this.hasNip07()) {
+        try {
+          const nip07 = new Nip07Signer();
+          const pk = await nip07.getPublicKey();
+          if (pk === this.activePubkey) {
+            account.type = 'nip07';
+            account.signer = nip07;
+            delete account.savedNip46;
+            this._saveSession();
+            return this.activePubkey;
+          }
+        } catch (_) { /* fall through to NIP-46 restore below */ }
+      }
       try {
         // Recreate signer from saved credentials
         const signer = Nip46Signer.restore(account.savedNip46);
