@@ -944,6 +944,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
 
             window.addEventListener('db-sync-active', refreshStatus);
             window.addEventListener('db-sync-paused', refreshStatus);
+            window.addEventListener('db-sync-connecting', refreshStatus);
 
             window.addEventListener('db-sync-error', (e) => {
                 // Detail-less errors come from _setStatus('error'); the specific
@@ -1025,6 +1026,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
         syncDotClass() {
             if (this.syncStatus === 'error' || this.signerOffline) return 'sync-error';
             if (this.syncStatus === 'active') return 'sync-active';
+            if (this.syncStatus === 'connecting') return 'sync-active';
             if (this.syncStatus === 'paused') return 'sync-paused';
             return 'sync-idle';
         },
@@ -1032,6 +1034,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
         getSyncStatusText() {
             if (this.signerOffline) return 'Disconnected';
             if (this.syncStatus === 'active') return 'Syncing...';
+            if (this.syncStatus === 'connecting') return 'Connecting…';
             if (this.syncStatus === 'error') return 'Sync Error';
             if (this.syncStatus === 'paused') return 'Connected';
             if (this.syncStatus === 'idle') return 'Not syncing';

@@ -116,6 +116,13 @@ window.Sync = {
         // `u` tag we sign MUST be relative — full URL would fail to verify.
         const signUrl = `/${dbId}/_ws`;
 
+        // Reflect the real state up front: "connecting" begins with signing the
+        // WS envelope, which on a remote signer (Amber/nsec.app) is a relay
+        // round-trip that can take seconds. Setting 'connecting' only AFTER the
+        // sign made a slow/hung signer look like 'idle' ("Not syncing") with no
+        // error — the socket was actually mid-handshake the whole time.
+        this._setStatus('connecting');
+
         let envelope;
         try {
             envelope = await window.Auth.signMna1(signUrl, 'GET');
@@ -134,8 +141,6 @@ window.Sync = {
             this._scheduleReconnect();
             return;
         }
-
-        this._setStatus('connecting');
         let ws;
         try {
             ws = new WebSocket(wsUrl);
@@ -481,6 +486,8 @@ window.Sync = {
             window.dispatchEvent(new CustomEvent('db-sync-paused'));
         } else if (s === 'error') {
             window.dispatchEvent(new CustomEvent('db-sync-error'));
+        } else if (s === 'connecting') {
+            window.dispatchEvent(new CustomEvent('db-sync-connecting'));
         }
     },
 };
