@@ -77,17 +77,30 @@ class TenantManager {
         // branch mint a duplicate "My Band" on every retry (and risks
         // creating real duplicates the instant the signer recovers mid-loop).
         // Bail out so the caller's retry path re-tries the READ only.
+        let fetchFailed = false;
         try {
             this.tenantList = await this._fetchMyTenants();
         } catch (e) {
             console.warn('⚠️ TenantManager: /api/my-tenants failed:', e.message);
-            throw new Error(`Cannot reach MyCouch/signer — will retry: ${e.message}`);
+            // Signer/network down. Fall back to the last-known band list from
+            // localStorage so the app still renders bands + local (Dexie) data
+            // offline instead of stranding the user on "Loading".
+            const cached = this._loadTenantCache();
+            if (cached.length) {
+                console.warn(`📴 Signer/network down — using ${cached.length} cached band(s)`);
+                window.DLog?.push('tenant', `offline — ${cached.length} cached band(s)`);
+                this.tenantList = cached;
+                fetchFailed = true;
+            } else {
+                throw new Error(`Cannot reach MyCouch/signer — will retry: ${e.message}`);
+            }
         }
         console.log(`📋 Found ${this.tenantList.length} tenants`);
 
-        // Genuine first-run: server confirmed an empty list → mint one
-        // personal tenant. A failure here is a real error; let it propagate.
-        if (this.tenantList.length === 0) {
+        // Genuine first-run: server confirmed an empty list → mint one personal
+        // tenant. NEVER mint when we fell back to cache — an offline/unknown
+        // state must not create duplicate bands.
+        if (this.tenantList.length === 0 && !fetchFailed) {
             console.log('📍 First run — creating personal tenant');
             const personal = await this.createTenant({ name: 'My Band' });
             this.tenantList = [personal];
@@ -372,6 +385,7 @@ class TenantManager {
                     this._tenantsFetchedAt = Date.now();
                     this._tenantsFailedAt = 0;
                     this._tenantsFailedErr = null;
+                    this._persistTenantCache(list);
                 }
                 return list;
             } catch (e) {
@@ -397,6 +411,19 @@ class TenantManager {
         this._tenantsFailedAt = 0;
         this._tenantsFailedErr = null;
     }
+    _tenantCacheKey() {
+        return `roady_tenants_${this.currentUserHash || 'anon'}`;
+    }
+    _persistTenantCache(list) {
+        try { localStorage.setItem(this._tenantCacheKey(), JSON.stringify(list || [])); } catch (_) {}
+    }
+    _loadTenantCache() {
+        try {
+            const r = JSON.parse(localStorage.getItem(this._tenantCacheKey()));
+            return Array.isArray(r) ? r : [];
+        } catch (_) { return []; }
+    }
+
 
     // Raw fetch — always signs and hits the network. Callers use
     // _fetchMyTenants() above.
