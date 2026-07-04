@@ -367,17 +367,24 @@ Next poll uses: new seq
 - If filter doesn't exist, sync may silently fail or retry
 - **TODO**: Create `_design/filters` doc in couch-sitter with user_filter, tenant_filter, etc.
 
-## Nostr Signers (per platform)
+## Nostr Signers (per login, not strictly per platform)
 
 **Auth is MNA1: every request (and the WS handshake) is individually signed.
-Where that signature comes from depends on the device:**
+The signer is whatever you logged in WITH — which usually (but not always)
+tracks the platform:**
 
-- **Desktop → Alby** (browser extension, **NIP-07**). Signs **locally and
-  instantly** — no relays, no round-trip. Reliable.
-- **Android → Amber** (**NIP-46** remote signer). Each signature is a
-  round-trip over Nostr relays (`relay.nsec.app`, `relay.damus.io`,
-  `nos.lol`): roady publishes a `sign_event` request, Amber must be running
-  and connected to answer. This is the **fragile** path.
+- **NIP-07 browser extension (Alby)** — desktop default. Signs **locally and
+  instantly**, no relays. Reliable. Only NIP-07.
+- **NIP-46 remote signer (Amber)** — Android default, **and any device that
+  logs in via the QR / "Nostr Connect" flow, including desktop.** Each
+  signature is a round-trip over Nostr relays (`relay.nsec.app`,
+  `relay.damus.io`, `nos.lol`): roady publishes a `sign_event` request and the
+  signer app must be running and connected to answer. This is the **fragile**
+  path regardless of platform.
+
+So a desktop is NOT guaranteed to be on Alby: if it was paired by scanning the
+QR with Amber, that desktop signs over relays (NIP-46) just like the phone, and
+the saved session persists across reloads until you sign out.
 
 ### Reading the debug log (sync panel → Logs)
 - `[nip46] sign_event published to N/3 relays` → this session is using the
