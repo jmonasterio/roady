@@ -1846,21 +1846,21 @@ class Nip46Signer extends BaseSigner {
     this._installResumeKick();
   }
 
-  // Phones drop relay sockets even in the foreground. When the page regains
-  // visibility or network, clear the dial cooldowns and re-attach the
-  // response listener if no relay is live — otherwise every RPC fast-fails
-  // into the 30s negative cache while the signer app sits there reachable.
+  // Phones freeze JS and silently kill sockets on suspend/background. A
+  // socket that survives often still reads readyState OPEN / status
+  // 'connected' while being DEAD — an RPC then publishes into the void
+  // (0/N relays) and only a full page reload recovered. So on resume
+  // (visibility/online) we don't trust 'connected': tear the signer pool
+  // down and re-dial from scratch — the reload-equivalent for just the
+  // signer transport, which is what actually fixed it in the field.
   _installResumeKick() {
     if (this._resumeHandler) return;
     this._resumeHandler = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      this.pool.failedRelays.clear();
-      let live = false;
-      this.pool.relays.forEach(r => { if (r.status === 'connected') live = true; });
-      if (this.connected && !live) {
-        window.DLog?.push('nip46', 'resume kick — re-subscribing signer relays');
-        this._startListening();
-      }
+      if (!this.connected) return;
+      window.DLog?.push('nip46', 'resume kick — rebuilding signer relay sockets');
+      try { this.pool.close(); } catch (_) {}
+      this._startListening();
     };
     if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this._resumeHandler);
     window.addEventListener('online', this._resumeHandler);
