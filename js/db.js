@@ -317,7 +317,10 @@ const DB = {
             if (row && row.pending > 0 && row.version >= change.version) {
                 // Local has a fresher (or equal) optimistic mutation pending
                 // for this doc. Drop the broadcast — the eventual ack/conflict
-                // will reconcile.
+                // will reconcile. Log it: a stale pending row that never acks
+                // would silently block the server version forever (this is how
+                // a doc can go missing while the sync cursor moves on).
+                window.DLog?.push('sync', `apply skip (pending) ${change.doc_id} localv=${row.version} inv=${change.version}`);
                 return;
             }
             if (!incoming) {
@@ -327,6 +330,7 @@ const DB = {
                 // local row and rely on next read to re-fetch via sync.
                 // sync.js (C.10) will issue a GET when it sees this case.
                 if (row) {
+                    window.DLog?.push('sync', `apply invalidate-delete ${change.doc_id} (no inlined doc)`);
                     await this.db.documents.delete(change.doc_id);
                 }
                 return;

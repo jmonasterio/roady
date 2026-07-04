@@ -249,14 +249,32 @@ window.Sync = {
                 break;
 
             case 'catchup': {
-                for (const change of frame.changes || []) {
-                    await DB.applyServerChange(change);
+                const changes = frame.changes || [];
+                // Advance lastSeq ONLY past changes that actually applied. If one
+                // throws, stop and resume from the last good seq next catchup —
+                // NEVER jump the cursor past an unapplied change (that's how a
+                // doc gets stranded: cursor at 687 but the doc at 687 never
+                // stored, so `since=687` never re-sends it).
+                let applied = 0;
+                let lastGood = await DB.getLastSeq();
+                for (const change of changes) {
+                    try {
+                        await DB.applyServerChange(change);
+                        applied++;
+                        if (typeof change.seq === 'number' && change.seq > lastGood) {
+                            lastGood = change.seq;
+                        }
+                    } catch (e) {
+                        window.DLog?.push('sync', `catchup apply FAILED seq=${change.seq} doc=${change.doc_id}: ${e?.message || e}`);
+                        break;
+                    }
                 }
-                if (typeof frame.last_seq === 'number') {
-                    await DB.setLastSeq(frame.last_seq);
-                }
+                const clean = applied === changes.length;
+                const target = clean && typeof frame.last_seq === 'number' ? frame.last_seq : lastGood;
+                await DB.setLastSeq(target);
+                window.DLog?.push('sync', `catchup: ${applied}/${changes.length} applied, lastSeq→${target}`);
                 window.dispatchEvent(new CustomEvent('db-sync-change', {
-                    detail: { catchup: true, count: (frame.changes || []).length },
+                    detail: { catchup: true, count: changes.length },
                 }));
                 break;
             }

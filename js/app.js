@@ -1076,6 +1076,24 @@ const MAX_DEVICES_PER_MEMBER = 5;
             }
         },
 
+        // Recovery for a stranded local cursor: if lastSeq moved past a change
+        // that never applied, that doc is invisible forever (catchup asks for
+        // seqs AFTER the cursor). Reset the cursor to 0 and reconnect so the
+        // server replays the full change history and re-applies everything.
+        // Safe: server changes are idempotent LWW upserts.
+        async forceResync() {
+            try {
+                window.DLog?.push('app', 'force resync — resetting lastSeq to 0');
+                await DB.setLastSeq(0);
+                if (window.Sync) Sync.cancelSync();
+                this.enableSync();
+                this.showSnackbar('Re-syncing everything from the server…');
+            } catch (e) {
+                this.showSnackbar('Resync failed: ' + (e?.message || e), 'error');
+                window.DLog?.push('app', `force resync failed ${e?.message || e}`);
+            }
+        },
+
         formatSyncTime(ts) {
             try { return new Date(ts).toLocaleTimeString(); }
             catch (_) { return ''; }
