@@ -384,7 +384,17 @@ const MAX_DEVICES_PER_MEMBER = 5;
 
             // Set current database name for display
             this.currentDbName = `pouchdb-local-${DB.hashRemoteUrl(resolvedMycouchUrl)}-${username}`;
-            // 4. Initialize Tenant Context with loaded options
+
+            // 4. Start sync FIRST — before tenant init and band loading. Those
+            // are serialized remote signs (60s timeout each on a struggling
+            // NIP-46 signer); starting sync after them left Sync.status at
+            // 'idle' ("Not syncing", no errors) for minutes after a refresh.
+            // Started here, the WS envelope sign is first in the queue and the
+            // panel truthfully shows 'Connecting…' from the first paint.
+            this.setupSyncListeners();
+            this.enableSync();
+
+            // 5. Initialize Tenant Context with loaded options
             try {
                 console.log('🏢 Initializing Tenant Context...');
                 console.log('🔗 Passing mycouchBaseUrl to TenantManager:', resolvedMycouchUrl);
@@ -443,10 +453,6 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 DB.setTenant(this.currentBandTenantId);
             }
 
-            // 5. Setup Sync before first render so the listener is attached
-            //    before any change event can fire, and sync has a head start.
-            this.setupSyncListeners();
-            this.enableSync();
 
             // Initial render from local PouchDB (may be empty on new browser;
             // db-sync-change will reload once remote data arrives).
