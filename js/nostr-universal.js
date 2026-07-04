@@ -1430,6 +1430,7 @@ class Nip46Signer extends BaseSigner {
     this.subscription = null;
     this.onAuthUrl = null; // Callback: (url) => {} — called when signer requires user approval
     this._resumeHandler = null;
+    this.peerEnc = null; // observed peer encryption: 'nip04' | 'nip44' | null
   }
 
   /**
@@ -1442,6 +1443,7 @@ class Nip46Signer extends BaseSigner {
       localPrivateKey: hexToBytes(savedData.localPrivateKey),
       remotePubkey: savedData.remotePubkey
     });
+    signer.peerEnc = savedData.peerEnc || null;
     return signer;
   }
 
@@ -1646,6 +1648,7 @@ class Nip46Signer extends BaseSigner {
                 this.localPrivateKey,
                 hexToBytes(event.pubkey)
               );
+              this.peerEnc = event.content.includes('?iv=') ? 'nip04' : 'nip44';
               const msg = JSON.parse(decrypted);
 
               // Handle connect request from signer (nostrconnect:// flow)
@@ -1756,17 +1759,22 @@ class Nip46Signer extends BaseSigner {
   /**
    * Send a response to a NIP-46 request
    */
+  // NIP-46 moved from NIP-04 to NIP-44 (spec, Dec 2024). Amber over
+  // nostrconnect uses NIP-44 and silently drops NIP-04 requests, so encrypt
+  // outbound in whatever scheme the peer used (detected on inbound, persisted
+  // across reloads); default NIP-04 only until we've observed the peer.
+  async _encToPeer(plaintext) {
+    const enc = this.peerEnc === 'nip44' ? nip44Encrypt : nip04Encrypt;
+    return await enc(plaintext, this.localPrivateKey, hexToBytes(this.remotePubkey));
+  }
+
   async _sendResponse(id, result) {
     if (!this.remotePubkey) {
       throw new Error('No remote pubkey to respond to');
     }
 
     const response = { id, result };
-    const encrypted = await nip04Encrypt(
-      JSON.stringify(response),
-      this.localPrivateKey,
-      hexToBytes(this.remotePubkey)
-    );
+    const encrypted = await this._encToPeer(JSON.stringify(response));
 
     const event = await signEvent(
       {
@@ -1800,6 +1808,7 @@ class Nip46Signer extends BaseSigner {
               this.localPrivateKey,
               hexToBytes(event.pubkey)
             );
+            this.peerEnc = event.content.includes('?iv=') ? 'nip04' : 'nip44';
             const msg = JSON.parse(decrypted);
 
             if (msg.id && this.pendingRequests.has(msg.id)) {
@@ -1900,11 +1909,7 @@ class Nip46Signer extends BaseSigner {
 
     // NIP-46 RPC uses NIP-04 encryption (ecosystem standard as of early 2026)
     const request = { id, method, params };
-    const encrypted = await nip04Encrypt(
-      JSON.stringify(request),
-      this.localPrivateKey,
-      hexToBytes(this.remotePubkey)
-    );
+    const encrypted = await this._encToPeer(JSON.stringify(request));
 
     const event = await signEvent(
       {
@@ -2352,7 +2357,8 @@ class NostrAuth {
             saved.nip46 = {
               localPrivateKey: bytesToHex(acc.signer.localPrivateKey),
               remotePubkey: acc.signer.remotePubkey,
-              relays: acc.signer.relays
+              relays: acc.signer.relays,
+              peerEnc: acc.signer.peerEnc || null,
             };
           }
 
