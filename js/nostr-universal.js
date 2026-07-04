@@ -2450,6 +2450,14 @@ class NostrAuth {
       // signing instead of a flaky relay round-trip to the remote signer. A
       // saved bunker/Amber session would otherwise be restored even on a
       // machine whose extension can sign directly (slow + failure-prone).
+      // MV3 extensions (Alby) can inject window.nostr a moment after our
+      // scripts run; without this wait restoreSession misses it and wrongly
+      // falls back to the slow saved NIP-46 session. Poll up to ~2s.
+      if (!this.hasNip07()) {
+        for (let i = 0; i < 20 && !this.hasNip07(); i++) {
+          await new Promise(r => setTimeout(r, 100));
+        }
+      }
       if (this.hasNip07()) {
         try {
           const nip07 = new Nip07Signer();

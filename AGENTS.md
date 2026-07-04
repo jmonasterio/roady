@@ -367,6 +367,42 @@ Next poll uses: new seq
 - If filter doesn't exist, sync may silently fail or retry
 - **TODO**: Create `_design/filters` doc in couch-sitter with user_filter, tenant_filter, etc.
 
+## Nostr Signers (per platform)
+
+**Auth is MNA1: every request (and the WS handshake) is individually signed.
+Where that signature comes from depends on the device:**
+
+- **Desktop → Alby** (browser extension, **NIP-07**). Signs **locally and
+  instantly** — no relays, no round-trip. Reliable.
+- **Android → Amber** (**NIP-46** remote signer). Each signature is a
+  round-trip over Nostr relays (`relay.nsec.app`, `relay.damus.io`,
+  `nos.lol`): roady publishes a `sign_event` request, Amber must be running
+  and connected to answer. This is the **fragile** path.
+
+### Reading the debug log (sync panel → Logs)
+- `[nip46] sign_event published to N/3 relays` → this session is using the
+  **remote signer (Amber)**, not the extension. NIP-07 (Alby) never logs
+  `[nip46]` and never touches relays.
+- `Signer did not respond to sign_event … (60000ms)` **while** `published
+  3/3` → the request reached the relays but **Amber didn't answer**: Amber
+  is closed/killed, lost the NIP-46 session, or isn't on those relays. Not a
+  roady bug — open Amber / re-pair / approve. When Amber is healthy it
+  answers in well under a second.
+
+### Gotchas learned the hard way
+- A desktop that "uses Alby" can still restore an **old saved Amber/NIP-46
+  session** for the same key and sign over relays. `restoreSession` prefers
+  a present NIP-07 extension holding the **same pubkey**; if it's still doing
+  `[nip46]`, the extension is absent or holds a **different** key — sign out
+  and reconnect with Alby.
+- The signer is the usual root cause of "not syncing" / "stuck on Loading".
+  roady degrades: successful band lists are cached in `localStorage`
+  (`roady_tenants_<hash>`) and rendered offline when signing fails, so the
+  app stays read-only-usable. Writes still need a live signer.
+- The **durable fix** for a flaky device is a **local key** (or an
+  extension holding the same key on desktop) so signing never leaves the
+  machine. Remote signing over relays will always be the weak link.
+
 ## API Architecture: Virtual Tables vs Backend APIs
 
 **Critical Rule**: API type is determined by **consistency requirement**, not data type.
