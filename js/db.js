@@ -133,6 +133,13 @@ const DB = {
     async setLastSeq(seq) {
         await this.db.meta.put({ key: 'last_seq', value: seq });
     },
+    // Count of non-deleted local documents (all tenants) — compared against
+    // the server's live count (welcome frame) to detect a stranded cursor.
+    async countLiveDocs() {
+        let n = 0;
+        await this.db.documents.each(r => { if (!r.deleted) n++; });
+        return n;
+    },
     async getClientId() {
         const r = await this.db.meta.get('client_id');
         return r?.value || null;

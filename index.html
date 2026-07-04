@@ -28,11 +28,11 @@
     <link rel="stylesheet" href="css/styles.css?v=20260703a">
     <script src="https://cdn.jsdelivr.net/npm/dexie@4.0.10/dist/dexie.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <script>window.ROADY_BUILD = '20260704g'; // bump together with the ?v= busters below</script>
+    <script>window.ROADY_BUILD = '20260704h'; // bump together with the ?v= busters below</script>
     <script src="js/dlog.js?v=20260704d"></script>
     <script src="js/auth.js?v=20260704c"></script>
-    <script src="js/sync.js?v=20260704g"></script>
-    <script src="js/db.js?v=20260704g"></script>
+    <script src="js/sync.js?v=20260704h"></script>
+    <script src="js/db.js?v=20260704h"></script>
     <script src="js/tenant-manager.js?v=20260704c"></script>
     <script src="js/app.js?v=20260704g"></script>
 
@@ -323,14 +323,13 @@
                                     <a :href="gig.mapLink" target="_blank" rel="noopener" @click.stop>📍 Open Map</a>
                                 </p>
                                 <small class="progress">
-                                    To Gig: <span x-text="getChecklistProgress(gig.loadoutChecklist)"></span> |
-                                    From Gig: <span x-text="getChecklistProgress(gig.loadinChecklist)"></span>
+                                    Load Out: <span x-text="getChecklistProgress(gig.loadoutChecklist)"></span> |
+                                    Load In: <span x-text="getChecklistProgress(gig.loadinChecklist)"></span>
                                 </small>
                             </div>
                             <div class="button-group">
-                                <button @click="viewGigDetail(gig._id, 'leavingForGig')" class="contrast">To
-                                    Gig</button>
-                                <button @click="viewGigDetail(gig._id, 'leavingFromGig')">From Gig</button>
+                                <button @click="viewGigDetail(gig._id, 'leavingForGig')" class="contrast">Load Out</button>
+                                <button @click="viewGigDetail(gig._id, 'leavingFromGig')">Load In</button>
                                 <button @click="openGigSetlist(gig._id)" class="secondary outline">Set List</button>
                                 <button @click="editGig(gig)" class="secondary outline">Edit</button>
                             </div>

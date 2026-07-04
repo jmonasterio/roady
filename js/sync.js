@@ -36,6 +36,8 @@ window.Sync = {
     POLL_MAX_INTERVAL_MS: 120_000,   // poll backoff ceiling when signing fails
     _pollFailures: 0,
     _resumeKick: null,
+    _serverDocCount: -1,             // live doc count from welcome (-1 = unknown)
+    _autoHealed: false,              // one resync-from-0 per session guard
     CHANGES_LIMIT: 500,
 
     // ---------------------------------------------------------------
@@ -230,6 +232,30 @@ window.Sync = {
         window.addEventListener('online', this._resumeKick);
     },
 
+    // Self-heal a stranded local cursor. If our local live-doc count is BELOW
+    // the server's (reported in `welcome`), the cursor advanced past a change
+    // that never applied — those docs can never be re-sent for the current
+    // cursor. Reset to 0 and reconnect so the server replays the full history
+    // (idempotent LWW). Guarded to once per session: if still short after a
+    // from-0 resync, it's a genuine apply failure — log, don't loop.
+    async _maybeAutoHeal() {
+        const server = this._serverDocCount;
+        if (typeof server !== 'number' || server < 0) return;
+        let local;
+        try { local = await DB.countLiveDocs(); } catch (_) { return; }
+        if (local >= server) return;
+        if (this._autoHealed) {
+            window.DLog?.push('sync', `auto-heal: still short (local ${local} < server ${server}) after resync — not looping`);
+            return;
+        }
+        this._autoHealed = true;
+        window.DLog?.push('sync', `auto-heal: local ${local} < server ${server} — resync from seq 0`);
+        await DB.setLastSeq(0);
+        this.reconnectAttempts = 0;
+        if (this.ws) { try { this.ws.close(); } catch (_) {} this.ws = null; }
+        this._connect();
+    },
+
     // ---------------------------------------------------------------
     // Server frame handling.
     // ---------------------------------------------------------------
@@ -242,6 +268,10 @@ window.Sync = {
             case 'welcome':
                 window.DLog?.push('ws', 'welcome — sync active');
                 if (frame.clientId) await DB.setClientId(frame.clientId);
+                // Server's live doc count for our scope — compared after catchup
+                // to detect a stranded local cursor and self-heal. -1/absent =
+                // server couldn't count, so skip the check.
+                this._serverDocCount = (typeof frame.docCount === 'number') ? frame.docCount : -1;
                 this.reconnectAttempts = 0;
                 this._cancelPollFallback();
                 this._setStatus('active');
@@ -273,6 +303,7 @@ window.Sync = {
                 const target = clean && typeof frame.last_seq === 'number' ? frame.last_seq : lastGood;
                 await DB.setLastSeq(target);
                 window.DLog?.push('sync', `catchup: ${applied}/${changes.length} applied, lastSeq→${target}`);
+                await this._maybeAutoHeal();
                 window.dispatchEvent(new CustomEvent('db-sync-change', {
                     detail: { catchup: true, count: changes.length },
                 }));
