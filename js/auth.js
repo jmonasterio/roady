@@ -155,7 +155,25 @@ window.Auth = {
                 created_at: Math.floor(Date.now() / 1000),
             };
             try {
-                const signed = await this._auth.sign(event);
+                // Hard ceiling on the actual signer round-trip. Every
+                // fetchWithAuth/authenticatedFetch call (tenant/band load at
+                // boot, debug-log upload, member management, ...) funnels
+                // through here — an unresponsive signer (locked wallet,
+                // swallowed permission dialog, dead NIP-46 relay) must not
+                // strand the caller forever. Nip46Signer.sign() already
+                // bounds itself via _rpc()'s internal timeout, but NIP-07
+                // extension signers (window.nostr.signEvent) have none of
+                // their own — this is the one place that covers every
+                // signer type. The abandoned signer call keeps running in
+                // the background; we just stop waiting on it.
+                const SIGN_TIMEOUT_MS = 20000;
+                const signed = await Promise.race([
+                    this._auth.sign(event),
+                    new Promise((_, reject) => setTimeout(
+                        () => reject(new Error(`Signing timed out after ${SIGN_TIMEOUT_MS / 1000}s — signer did not respond`)),
+                        SIGN_TIMEOUT_MS
+                    )),
+                ]);
                 window.DLog?.push('sign', `✓ ${label} (${Date.now() - t0}ms)`);
                 return signed;
             } catch (e) {

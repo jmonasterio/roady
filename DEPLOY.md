@@ -23,7 +23,7 @@ NODE_OPTIONS=--dns-result-order=ipv4first \
 ## Prerequisites
 
 Cloudflare credentials, shared across the argw.com CF projects, live in
-`../cf-migration/.env`:
+`../cf-infra/.env`:
 
 ```
 CLOUDFLARE_API_TOKEN=...
@@ -55,7 +55,7 @@ Both deploy scripts source this file automatically. `wrangler login`
 - **IPv6 black hole:** Node 22 + undici prefers IPv6, which dead-ends on
   this LAN and hangs wrangler's API calls (`fetch failed`). The
   `--dns-result-order=ipv4first` prefix (set by both scripts) fixes it;
-  without it, retry 2–5×. See `../cf-migration/AGENTS.md`.
+  without it, retry 2–5×. See `../cf-infra/AGENTS.md`.
 - **Windows / WSL:** `node` is broken under WSL on the dev box, so a bash
   `deploy.sh` fails with an I/O error. Use `deploy.bat`, which calls
   `npx wrangler` through the Windows Node install.

@@ -305,8 +305,7 @@ Show two actions:
 
 1. **Data + DAL**
    - Add `song`, `setlist_template`, `setlist` doc types.
-   - Implement all `js/db.js` methods in §4 (+ `js/storage.js` pass-throughs if
-     that shim layer is still wired for the other types).
+   - Implement all `js/db.js` methods in §4.
    - Load into Alpine state in `loadData()` (`songs`, `setlistTemplates`; gig
      setlist loaded on gig select).
 

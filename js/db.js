@@ -183,6 +183,17 @@ const DB = {
         };
     },
 
+    // Collision-resistant doc id. Bare `prefix + Date.now()` collides when two
+    // docs are minted in the same millisecond — a double-fired add handler, or
+    // two offline devices creating at the same epoch ms — and `_putLocal` then
+    // silently turns the second create into an UPDATE of the first (data loss).
+    // A random suffix makes that astronomically unlikely. No code parses the
+    // timestamp back out of a doc id, so the format change is safe.
+    _newId(prefix) {
+        const rand = (globalThis.crypto?.randomUUID?.() || Math.random().toString(16).slice(2)).slice(0, 8);
+        return `${prefix}${Date.now()}_${rand}`;
+    },
+
     // ---------------------------------------------------------------
     // Internal write path. All mutating DAL methods funnel here.
     //
@@ -194,6 +205,13 @@ const DB = {
     // For a fresh doc, current is undefined → ifVersion omitted, version=1.
     // ---------------------------------------------------------------
     async _putLocal({ doc_id, doc_type, tenant_id, body, deleted }) {
+        // Every roady doc is tenant-scoped; a null tenant_id drops the row out
+        // of the [doc_type+tenant_id+deleted] compound index — invisible to
+        // every _listByType read yet still synced. Fail loud rather than write
+        // a ghost row (a mutation with no active band is the actual bug).
+        if (tenant_id == null || tenant_id === '') {
+            throw new Error(`_putLocal: tenant_id required (doc_type=${doc_type}, doc_id=${doc_id})`);
+        }
         // Strip Alpine's reactive Proxy wrapper from `body`. IDB's structured
         // clone refuses non-cloneable host objects; without this, any DAL
         // mutation whose input came from a `<button @click="…">` Alpine
@@ -262,6 +280,38 @@ const DB = {
     },
 
     /**
+     * Re-queue entries stranded in 'inflight' by a refresh/tab-kill/suspend
+     * between mark-inflight and ack. outboxNext only selects 'pending', so
+     * without this the write is applied locally but never sent, and the doc's
+     * pending counter never returns to 0. Safe to re-PUT: a duplicate write
+     * with the same ifVersion just 409s into the server-wins path.
+     */
+    async outboxRequeueInflight() {
+        return await this.db.outbox
+            .where('status').equals('inflight')
+            .modify({ status: 'pending' });
+    },
+
+    /**
+     * Drop an outbox entry the server permanently rejected (max attempts, 403,
+     * or a delete the server reports as already gone) WITHOUT stranding the
+     * doc's pending counter. Leaving pending > 0 makes applyServerChange
+     * suppress equal-version server broadcasts for that doc forever.
+     */
+    async outboxDrop(id) {
+        await this.db.transaction('rw', this.db.documents, this.db.outbox, async () => {
+            const entry = await this.db.outbox.get(id);
+            if (!entry) return;
+            const row = await this.db.documents.get(entry.doc_id);
+            if (row) {
+                row.pending = Math.max(0, (row.pending || 1) - 1);
+                await this.db.documents.put(row);
+            }
+            await this.db.outbox.delete(id);
+        });
+    },
+
+    /**
      * Server accepted the mutation. Replace the optimistic row's version
      * with the server-assigned one and decrement pending.
      */
@@ -270,15 +320,16 @@ const DB = {
             const entry = await this.db.outbox.get(id);
             if (!entry) return;
             const row = await this.db.documents.get(entry.doc_id);
-            if (row && row.version === entry.localVersion) {
-                // Only adopt server version if no newer local mutation has
-                // overtaken this entry (would mean its outbox sibling
-                // supersedes it).
-                row.version = version;
-                row.updated_at = updated_at;
-                row.pending = Math.max(0, (row.pending || 1) - 1);
-                await this.db.documents.put(row);
-            } else if (row) {
+            if (row) {
+                // Adopt the server version only when it's a real number AND no
+                // newer local mutation overtook this entry. A 204 (delete) or an
+                // unparseable 200 yields version=undefined — never overwrite the
+                // row's version with that: it would blank the LWW guard and turn
+                // the next write into a blind PUT that bypasses concurrency.
+                if (row.version === entry.localVersion && Number.isFinite(version)) {
+                    row.version = version;
+                    if (updated_at !== undefined) row.updated_at = updated_at;
+                }
                 row.pending = Math.max(0, (row.pending || 1) - 1);
                 await this.db.documents.put(row);
             }
@@ -314,10 +365,28 @@ const DB = {
     },
 
     /**
+     * Defense-in-depth for the tenant-scoped change feed (server #4): the app
+     * passes the band ids the user actually belongs to; applyServerChange then
+     * refuses to persist a foreign tenant's doc even if an un-upgraded server
+     * over-shares. `null`/unset ⇒ no filtering (backward-safe).
+     */
+    setKnownTenants(ids) {
+        this.knownTenantIds = Array.isArray(ids) && ids.length ? new Set(ids) : null;
+    },
+
+    /**
      * Apply a server-pushed change (WS `change` or HTTP `/changes` row).
      * No-op if local pending mutations would clobber the incoming version.
      */
     async applyServerChange(change) {
+        // Drop foreign-tenant changes (defense-in-depth; see setKnownTenants).
+        // Skipping only avoids the local write — the sync cursor still advances,
+        // which is correct: we never want another band's docs on disk.
+        const _tenant = change.tenant_id ?? change.doc?.tenant_id ?? null;
+        if (this.knownTenantIds && _tenant != null && !this.knownTenantIds.has(_tenant)) {
+            window.DLog?.push('sync', `apply skip (foreign tenant ${_tenant}) ${change.doc_id}`);
+            return;
+        }
         const incoming = change.doc; // server inlines on WS broadcasts
         await this.db.transaction('rw', this.db.documents, async () => {
             const row = await this.db.documents.get(change.doc_id);
@@ -330,12 +399,43 @@ const DB = {
                 window.DLog?.push('sync', `apply skip (pending) ${change.doc_id} localv=${row.version} inv=${change.version}`);
                 return;
             }
+            if (change.deleted) {
+                // Server tombstone (delete frames carry doc:null). Keep a
+                // restorable local tombstone (deleted:1, last-known body)
+                // instead of hard-deleting, so the doc still shows in "Recently
+                // Deleted" and can be restored — matching the deleting device,
+                // and idempotent when the deleting device sees its own delete
+                // echoed back (no resurrection).
+                if (row) {
+                    row.deleted = 1;
+                    row.version = change.version;
+                    row.pending = 0;
+                    if (incoming) {
+                        row.body = incoming.body;
+                        row.updated_at = incoming.updated_at;
+                        row.updated_by = incoming.updated_by;
+                    }
+                    await this.db.documents.put(row);
+                } else if (incoming) {
+                    await this.db.documents.put({
+                        doc_id: incoming.doc_id,
+                        db_id: incoming.db_id,
+                        doc_type: incoming.doc_type,
+                        tenant_id: incoming.tenant_id ?? null,
+                        body: incoming.body,
+                        version: incoming.version,
+                        updated_at: incoming.updated_at,
+                        updated_by: incoming.updated_by,
+                        deleted: 1,
+                        pending: 0,
+                    });
+                }
+                return;
+            }
             if (!incoming) {
-                // Invalidation-only entry (legacy `/changes` without
-                // include_docs). Mark the row stale by bumping version so a
-                // subsequent GET refreshes it. For C.9 we just delete the
-                // local row and rely on next read to re-fetch via sync.
-                // sync.js (C.10) will issue a GET when it sees this case.
+                // Invalidation-only row (no include_docs, not a delete). With
+                // include_docs=1 now always requested this is rare; drop the
+                // local row so the next read re-fetches.
                 if (row) {
                     window.DLog?.push('sync', `apply invalidate-delete ${change.doc_id} (no inlined doc)`);
                     await this.db.documents.delete(change.doc_id);
@@ -384,7 +484,7 @@ const DB = {
     },
 
     async addEquipment(item) {
-        const doc_id = 'equipment_' + Date.now();
+        const doc_id = this._newId('equipment_');
         const body = {
             name: item.name,
             description: item.description || '',
@@ -444,7 +544,7 @@ const DB = {
     },
 
     async addGigType(type) {
-        const doc_id = 'gig_type_' + Date.now();
+        const doc_id = this._newId('gig_type_');
         const body = {
             name: type.name,
             equipmentIds: type.equipmentIds || [],
@@ -525,7 +625,7 @@ const DB = {
             }
         });
 
-        const doc_id = 'gig_' + Date.now();
+        const doc_id = this._newId('gig_');
         const body = {
             name: gig.name,
             gigTypeId: gig.gigTypeId,
@@ -617,7 +717,7 @@ const DB = {
     },
 
     async addBandMember(member) {
-        const doc_id = 'band_member_' + Date.now();
+        const doc_id = this._newId('band_member_');
         const body = {
             name: member.name.trim(),
             role: member.role.trim(),
@@ -665,7 +765,7 @@ const DB = {
     },
 
     async addSong(song) {
-        const doc_id = 'song_' + Date.now();
+        const doc_id = this._newId('song_');
         const body = {
             title: (song.title || '').trim(),
             artist: song.artist || '',
@@ -733,7 +833,7 @@ const DB = {
     },
 
     async addSetlistTemplate(tpl) {
-        const doc_id = 'setlist_template_' + Date.now();
+        const doc_id = this._newId('setlist_template_');
         const body = {
             name: (tpl.name || '').trim(),
             sections: this._cloneSections(tpl.sections || []),
@@ -789,7 +889,7 @@ const DB = {
         }
         const src = this._toLegacy(row);
         const songs = await this._songMap();
-        const doc_id = 'setlist_template_' + Date.now();
+        const doc_id = this._newId('setlist_template_');
         const body = {
             name: `${src.name || 'Set List'} (copy)`,
             sections: this._cloneSections(src.sections || [], songs),
@@ -821,7 +921,7 @@ const DB = {
         }
         const tpl = this._toLegacy(row);
         const songs = await this._songMap();
-        const doc_id = 'setlist_' + Date.now();
+        const doc_id = this._newId('setlist_');
         const body = {
             gigId,
             sourceTemplateId: templateId,
@@ -839,7 +939,7 @@ const DB = {
     },
 
     async addBlankSetlist(gigId, name) {
-        const doc_id = 'setlist_' + Date.now();
+        const doc_id = this._newId('setlist_');
         const body = {
             gigId,
             sourceTemplateId: null,

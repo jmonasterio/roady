@@ -214,6 +214,17 @@ class TenantManager {
         return await res.json();
     }
 
+    // Revoke a still-redeemable invitation by id (used when re-inviting the
+    // same roster member — the prior link must stop working). Best-effort:
+    // a 404 means it's already gone, which is fine.
+    async revokeInvitation(tenantId, invitationId) {
+        if (!invitationId) return false;
+        const tid = _internalId(tenantId);
+        const url = `${this._base()}/api/tenants/${encodeURIComponent(tid)}/invitations/${encodeURIComponent(invitationId)}`;
+        const res = await window.Auth.fetchWithAuth(url, { method: 'DELETE' });
+        return res.ok || res.status === 404;
+    }
+
     async deleteTenant(tenantId) {
         const tid = _internalId(tenantId);
         const url = `${this._base()}/api/tenants/${encodeURIComponent(tid)}`;
@@ -226,6 +237,7 @@ class TenantManager {
         this.tenantList = this.tenantList.filter(
             t => t._id !== tid && t.tenant_id !== tid,
         );
+        this._persistTenantCache(this.tenantList);
         if (this.currentTenant && (this.currentTenant._id === tid || this.currentTenant.tenant_id === tid)) {
             this.currentTenant = this.tenantList[0] || null;
             await this._saveActiveTenantId(this.currentTenant?._id || null);
@@ -253,12 +265,22 @@ class TenantManager {
 
     async leaveTenant(tenantId) {
         const tid = _internalId(tenantId);
-        // `currentUserHash` is the raw hash; removeMemberByHash builds the path.
-        await this.removeMemberByHash(tid, this.currentUserHash);
+        // Dedicated self-leave endpoint: members/admins may leave; the owner is
+        // refused (403 — transfer or delete instead). A 404 means the endpoint
+        // isn't deployed on this backend yet — propagate the status so the
+        // caller doesn't falsely clear local state for a leave that didn't stick.
+        const url = `${this._base()}/api/tenants/${encodeURIComponent(tid)}/leave`;
+        const res = await window.Auth.fetchWithAuth(url, { method: 'POST' });
+        if (!res.ok) {
+            const text = await res.text().catch(() => '');
+            throw new Error(`leaveTenant ${res.status}: ${text}`);
+        }
         this._invalidateTenantsCache();
         this.tenantList = this.tenantList.filter(
             t => t._id !== tid && t.tenant_id !== tid,
         );
+        // Rewrite the durable cache too, or an offline boot resurrects the band.
+        this._persistTenantCache(this.tenantList);
         if (this.currentTenant && (this.currentTenant._id === tid || this.currentTenant.tenant_id === tid)) {
             this.currentTenant = this.tenantList[0] || null;
             await this._saveActiveTenantId(this.currentTenant?._id || null);

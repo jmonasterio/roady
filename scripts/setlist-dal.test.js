@@ -17,6 +17,7 @@ function makeMockDb() {
   const documents = {
     async get(id) { return docs.get(id); },
     async put(row) { docs.set(row.doc_id, row); return row.doc_id; },
+    async delete(id) { docs.delete(id); },
     where(index) {
       return {
         equals(arr) {
@@ -34,6 +35,32 @@ function makeMockDb() {
   };
   const outboxTbl = {
     async add(entry) { entry.id = outboxId++; outbox.push(entry); return entry.id; },
+    async get(id) { return outbox.find(e => e.id === id); },
+    async delete(id) {
+      const i = outbox.findIndex(e => e.id === id);
+      if (i >= 0) outbox.splice(i, 1);
+    },
+    async update(id, patch) {
+      const e = outbox.find(x => x.id === id);
+      if (e) Object.assign(e, patch);
+      return e ? 1 : 0;
+    },
+    where(field) {
+      return {
+        equals(val) {
+          const match = () => outbox.filter(e => e[field] === val);
+          return {
+            async toArray() { return match(); },
+            async modify(patch) {
+              const rows = match();
+              rows.forEach(e => Object.assign(e, patch));
+              return rows.length;
+            },
+            limit(n) { return { async toArray() { return match().slice(0, n); } }; },
+          };
+        },
+      };
+    },
   };
   return {
     documents,
@@ -124,6 +151,56 @@ function makeMockDb() {
 
   // 8. Every write enqueued an outbox op (sync comes free) ---------------
   assert.ok(DB.db._outbox.length >= 10, 'mutations enqueued to outbox: ' + DB.db._outbox.length);
+
+  // 9. Soft-delete enqueues an op:'delete' carrying the LWW guard version --
+  const dr = await DB.addSong({ title: 'Doomed', durationSec: 60 });
+  const beforeDel = (await DB.getAllSongs()).find(s => s._id === dr.id);
+  await DB.deleteSong(dr.id);
+  const delEntry = DB.db._outbox.find(e => e.doc_id === dr.id && e.op === 'delete');
+  assert.ok(delEntry, 'soft-delete enqueues an op:delete outbox entry (not a PUT)');
+  assert.strictEqual(delEntry.ifVersion, beforeDel._version,
+    'delete entry carries ifVersion = version at delete time');
+  await DB.restoreSong(dr.id);
+
+  // 10. outboxRequeueInflight rescues entries stranded by a refresh -------
+  await DB.db.outbox.update(DB.db._outbox[0].id, { status: 'inflight' });
+  await DB.outboxRequeueInflight();
+  assert.ok(DB.db._outbox.every(e => e.status !== 'inflight'),
+    'no inflight entries remain after requeue');
+
+  // 11. outboxDrop decrements the doc pending counter and removes entry ---
+  const pr = await DB.addSong({ title: 'PendingProbe', durationSec: 10 });
+  const probeEntry = DB.db._outbox.find(e => e.doc_id === pr.id);
+  const pendingBefore = DB.db._docs.get(pr.id).pending;
+  await DB.outboxDrop(probeEntry.id);
+  assert.strictEqual(DB.db._docs.get(pr.id).pending, pendingBefore - 1,
+    'outboxDrop decrements the doc pending counter');
+  assert.ok(!DB.db._outbox.find(e => e.id === probeEntry.id), 'outboxDrop removes the entry');
+
+  // 12. outboxAck keeps the row version when the server returns none (204) -
+  const av = await DB.addSong({ title: 'AckProbe', durationSec: 10 });
+  const ackEntry = DB.db._outbox.find(e => e.doc_id === av.id);
+  const ackRowVer = DB.db._docs.get(av.id).version;
+  await DB.outboxAck(ackEntry.id, { version: undefined, updated_at: undefined });
+  assert.strictEqual(DB.db._docs.get(av.id).version, ackRowVer,
+    'ack with no version leaves the row version intact (no blind-PUT trap)');
+  assert.strictEqual(DB.db._docs.get(av.id).pending, 0, 'ack still decrements pending to 0');
+
+  // 13. applyServerChange tombstones on a delete frame (no hard-delete) ---
+  const tv = await DB.addSong({ title: 'TombProbe', durationSec: 10 });
+  const tvRow = DB.db._docs.get(tv.id);
+  tvRow.pending = 0; await DB.db.documents.put(tvRow); // simulate acked
+  await DB.applyServerChange({ doc_id: tv.id, version: tvRow.version + 1, deleted: true, doc: null });
+  const tomb = DB.db._docs.get(tv.id);
+  assert.ok(tomb, 'server delete keeps a local row (not hard-deleted)');
+  assert.strictEqual(tomb.deleted, 1, 'row is marked deleted');
+  assert.ok((await DB.getDeletedSongs()).some(s => s._id === tv.id),
+    'server-deleted doc appears in trash (restorable) on the non-deleting device');
+
+  // 14. Doc ids are collision-resistant within the same millisecond -------
+  const ids = new Set();
+  for (let i = 0; i < 100; i++) ids.add(DB._newId('probe_'));
+  assert.strictEqual(ids.size, 100, 'minted ids are unique within a tight loop');
 
   console.log('ALL SETLIST DAL TESTS PASSED');
 })().catch(e => { console.error('TEST FAILED:', e); process.exit(1); });

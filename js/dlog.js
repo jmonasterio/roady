@@ -12,6 +12,7 @@
 
     const LS_KEY = 'roady_dlog';
     const MAX = 400;
+    const MAX_MSG = 500;  // per-entry cap: one multi-KB error body must not blow the LS quota
 
     let entries = [];
     try {
@@ -37,7 +38,9 @@
     window.DLog = {
         push(tag, msg) {
             try {
-                entries.push({ t: Date.now(), tag: String(tag), msg: String(msg) });
+                let m = String(msg);
+                if (m.length > MAX_MSG) m = m.slice(0, MAX_MSG) + '…[truncated]';
+                entries.push({ t: Date.now(), tag: String(tag), msg: m });
                 if (entries.length > MAX) entries.splice(0, entries.length - MAX);
                 scheduleSave();
                 // Mirror to console for desktop debugging.

@@ -28,13 +28,13 @@
     <link rel="stylesheet" href="css/styles.css?v=20260703a">
     <script src="https://cdn.jsdelivr.net/npm/dexie@4.0.10/dist/dexie.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <script>window.ROADY_BUILD = '20260704o'; // bump together with the ?v= busters below</script>
-    <script src="js/dlog.js?v=20260704d"></script>
-    <script src="js/auth.js?v=20260704c"></script>
-    <script src="js/sync.js?v=20260704h"></script>
-    <script src="js/db.js?v=20260704h"></script>
-    <script src="js/tenant-manager.js?v=20260704l"></script>
-    <script src="js/app.js?v=20260704k"></script>
+    <script>window.ROADY_BUILD = '20260704u'; // bump together with the ?v= busters below</script>
+    <script src="js/dlog.js?v=20260704e"></script>
+    <script src="js/auth.js?v=20260704d"></script>
+    <script src="js/sync.js?v=20260704j"></script>
+    <script src="js/db.js?v=20260704j"></script>
+    <script src="js/tenant-manager.js?v=20260704m"></script>
+    <script src="js/app.js?v=20260704p"></script>
 
 
     <!-- Service Worker Registration -->
@@ -57,6 +57,16 @@
             console.log('🔧 Development mode: Service Worker disabled');
         }
     </script>
+
+    <!-- PWA install: capture the Chromium beforeinstallprompt early (it fires
+         before Alpine boots) so the app can offer "Add to Home Screen". -->
+    <script>
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            window.__roadyInstallPrompt = e;
+            window.dispatchEvent(new CustomEvent('roady-installable'));
+        });
+    </script>
 </head>
 
 <body>
@@ -64,7 +74,27 @@
     <div id="nostr-login-overlay" style="position:fixed;inset:0;z-index:9999;background:var(--pico-background-color,#11111b);display:flex;align-items:center;justify-content:center;padding:1rem;">
         <div id="nostr-login-card" style="width:100%;max-width:420px;"></div>
     </div>
-    <div x-data="roady" x-cloak @init="init().catch(error => { console.error('❌ App initialization failed:', error); window.fatalError = error; })">
+    <div x-data="roady" x-cloak>
+        <!-- Stuck-on-loading escape hatch. Deliberately NOT gated on
+             isAuthenticated/isLoading like the rest of the chrome — the hang
+             this exists for can happen before auth ever completes, and a
+             phone PWA has no devtools console to see why. Shows the
+             persisted on-device DLog ring buffer (js/dlog.js) plus Copy /
+             Reload so a user can self-diagnose or hand a log to support. -->
+        <div x-show="stuckOnLoading" x-cloak
+            style="position:fixed;inset:0;z-index:9998;background:var(--pico-background-color,#11111b);display:flex;flex-direction:column;padding:1rem;overflow-y:auto;">
+            <h3 style="margin-top:0;">Still loading…</h3>
+            <p class="text-muted">This is taking longer than expected. You can wait, reload, or check the log below.</p>
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.75rem;">
+                <button type="button" @click="reloadApp()" style="margin:0;">Reload</button>
+                <button type="button" class="secondary outline" @click="dismissStuckLoading()" style="margin:0;">Keep Waiting</button>
+                <button type="button" class="secondary outline"
+                    @click="copyDebugLog()" x-text="debugLogCopied ? 'Copied!' : 'Copy Log'" style="margin:0;"></button>
+                <button type="button" class="secondary" :aria-busy="debugLogSending"
+                    @click="sendDebugLog()" x-text="debugLogSending ? 'Sending…' : 'Send Log to Support'" style="margin:0;"></button>
+            </div>
+            <pre style="flex:1;overflow:auto;background:var(--pico-card-background-color);padding:0.75rem;border-radius:var(--pico-border-radius);font-size:0.75em;white-space:pre-wrap;word-break:break-word;"><code x-text="debugLogText"></code></pre>
+        </div>
         <nav class="container-fluid top-nav">
             <ul class="nav-brand">
                 <li x-show="isLoading || !isAuthenticated || userBands.length === 0"><strong>Roady</strong></li>
@@ -87,8 +117,6 @@
                         :class="{ active: currentView === 'setlists' }">Music</a></li>
                 <li><a href="#" @click.prevent="currentView = 'band'"
                         :class="{ active: currentView === 'band' }">Band</a></li>
-                <li x-show="options.couchDbUrl" style="opacity: 0.7; font-size: 0.85em;" x-text="getSyncStatusText()">
-                </li>
             </ul>
             <ul x-show="isAuthenticated" class="nav-user" style="margin:0;padding:0;list-style:none;">
                 <li style="display:flex;align-items:center;gap:0.5rem;">
@@ -181,11 +209,11 @@
             </div>
 
             <!-- Fatal Error Modal -->
-            <dialog :open="typeof window.fatalError !== 'undefined' && window.fatalError">
+            <dialog :open="fatalError">
                 <article>
                     <h3>⚠️ Configuration Error</h3>
                     <p>The application could not start because of a configuration error:</p>
-                    <pre style="background: #f0f0f0; padding: 1rem; border-radius: 0.25rem; overflow-x: auto; font-size: 0.85rem;" x-text="window.fatalError?.message || ''"></pre>
+                    <pre style="background: #f0f0f0; padding: 1rem; border-radius: 0.25rem; overflow-x: auto; font-size: 0.85rem;" x-text="fatalError?.message || ''"></pre>
                     <p><strong>The application could not start. Check the console for details.</strong></p>
                 </article>
             </dialog>
@@ -386,7 +414,7 @@
                                         </div>
                                         <div class="progress-bar">
                                             <div class="progress-bar-fill"
-                                                :style="`width: ${(selectedGig.loadoutChecklist.filter(i => i.checked).length / selectedGig.loadoutChecklist.length * 100).toFixed(0)}%`">
+                                                :style="`width: ${selectedGig.loadoutChecklist.length ? (selectedGig.loadoutChecklist.filter(i => i.checked).length / selectedGig.loadoutChecklist.length * 100).toFixed(0) : 0}%`">
                                             </div>
                                         </div>
                                     </div>
@@ -597,7 +625,18 @@
                                                 </ol>
                                             </div>
                                         </template>
-                                        <p x-show="(gigSetlist.sections?.length || 0) === 0" class="empty-state">This set list is empty. Tap Edit to add sections and songs.</p>
+                                        <div x-show="setlistSongCount(gigSetlist) === 0" class="empty-state">
+                                            <p style="margin: 0 0 0.75rem 0;">This set list is empty. Tap Edit to add sections and songs, or start from an existing set list:</p>
+                                            <label>Start from a set list
+                                                <select x-model="newGigSetlistTemplateId">
+                                                    <option value="">Select a set list…</option>
+                                                    <template x-for="tpl in setlistTemplates" :key="tpl._id">
+                                                        <option :value="tpl._id" x-text="tpl.name"></option>
+                                                    </template>
+                                                </select>
+                                            </label>
+                                            <button @click="useTemplateForGig()" :disabled="!newGigSetlistTemplateId" style="margin-top: 0.75rem;">Use Set List</button>
+                                        </div>
                                     </div>
                                 </template>
                             </div>
@@ -1440,37 +1479,32 @@
                 </button>
             </div>
 
-            <!-- Diagnostics Modal -->
-            <dialog x-show="showDiagnostics" @click.self="showDiagnostics = false" open>
-                <article>
-                    <header>
-                        <h2>Session & MyCouch Diagnostics</h2>
-                        <button class="close" @click="showDiagnostics = false"></button>
-                    </header>
-                    
-                    <div x-show="$data.diagnosticsResults && !$data.diagnosticsResults.error && !$data.diagnosticsResults.jwtClaim" style="text-align: center;">
-                        <p>Loading...</p>
+            <!-- Add-to-Home-Screen hint — only in a browser tab, never when
+                 already installed (standalone). Android/Chromium fires
+                 beforeinstallprompt and uses the native prompt; iOS Safari has
+                 no such API, so we show the manual Share -> Add to Home Screen. -->
+            <div x-show="showInstallHint && isAuthenticated" x-cloak role="dialog" aria-label="Add Roady to home screen"
+                style="position: fixed; bottom: 1rem; left: 1rem; right: 1rem; max-width: 400px; margin: 0 auto; background: var(--pico-form-element-background-color); border: 1px solid var(--pico-form-element-border-color); border-radius: var(--pico-border-radius); padding: 1rem; z-index: 1001; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
+                <div style="display: flex; align-items: flex-start; gap: 0.75rem;">
+                    <img src="/icons/icon-96x96.png" alt="" width="40" height="40" style="border-radius: 8px; flex-shrink: 0;" />
+                    <div style="flex: 1;">
+                        <strong style="display: block; margin-bottom: 0.25rem;">Add Roady to your home screen</strong>
+                        <p x-show="installPlatform === 'android'" style="margin: 0; font-size: 0.85rem; color: var(--pico-muted-color);">
+                            Install it as an app for full-screen, offline use.</p>
+                        <p x-show="installPlatform === 'ios'" style="margin: 0; font-size: 0.85rem; color: var(--pico-muted-color);">
+                            Tap the Share button
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="vertical-align: -2px;"><path d="M12 16V4"></path><path d="M8 8l4-4 4 4"></path><path d="M4 12v6a2 2 0 002 2h12a2 2 0 002-2v-6"></path></svg>
+                            in Safari's toolbar, then choose <strong>Add to Home Screen</strong>.</p>
                     </div>
+                    <button @click="dismissInstallHint()" aria-label="Dismiss"
+                        style="margin: 0; padding: 0.25rem 0.5rem; font-size: 0.85rem; color: var(--pico-muted-color); border: none; background: transparent; cursor: pointer;">✕</button>
+                </div>
+                <div x-show="installPlatform === 'android'" style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+                    <button @click="promptInstall()" style="margin: 0; flex: 1;">Add to Home Screen</button>
+                    <button @click="dismissInstallHint()" class="secondary outline" style="margin: 0;">Not now</button>
+                </div>
+            </div>
 
-                    <div x-show="$data.diagnosticsResults && $data.diagnosticsResults.error">
-                        <h3 style="color: var(--pico-form-element-invalid-border-color);">❌ Error</h3>
-                        <p x-text="$data.diagnosticsResults.error"></p>
-                    </div>
-
-                    <div x-show="$data.diagnosticsResults && $data.diagnosticsResults.jwtClaim">
-                        <h3>📋 Session Claims</h3>
-                        <pre style="background: var(--pico-card-background-color); padding: 1rem; border-radius: var(--pico-border-radius); overflow-x: auto; font-size: 0.85em;"><code x-text="$data.diagnosticsResults && $data.diagnosticsResults.jwtClaim ? JSON.stringify($data.diagnosticsResults.jwtClaim, null, 2) : ''"></code></pre>
-                        
-                        <h3>✅ MyCouch Response</h3>
-                        <pre x-show="$data.diagnosticsResults && $data.diagnosticsResults.mycouchResponse" style="background: var(--pico-card-background-color); padding: 1rem; border-radius: var(--pico-border-radius); overflow-x: auto; font-size: 0.85em;"><code x-text="$data.diagnosticsResults && $data.diagnosticsResults.mycouchResponse ? JSON.stringify($data.diagnosticsResults.mycouchResponse, null, 2) : ''"></code></pre>
-                    </div>
-
-                    <footer style="text-align: right;">
-                        <button class="secondary" @click="showDiagnostics = false">Close</button>
-
-                    </footer>
-                </article>
-            </dialog>
         </main>
 
         <!-- Bottom tab bar (mobile) -->
@@ -1549,7 +1583,7 @@
         </div>
     </div>
     <script type="module">
-        import { NostrAuth, NostrLoginUI, encodeNpub, nuiAvatarHtml, nuiDisplayName, setProfileOverride } from './js/nostr-universal.js?v=20260704n';
+        import { NostrAuth, NostrLoginUI, encodeNpub, nuiAvatarHtml, nuiDisplayName, setProfileOverride } from './js/nostr-universal.js?v=20260704p';
 
         const APP_NAME = 'roady';
         const RELAYS   = ['wss://relay.nsec.app', 'wss://relay.damus.io', 'wss://nos.lol'];

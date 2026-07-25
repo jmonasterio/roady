@@ -2,8 +2,17 @@
 // Works great for both development and production!
 // No manual version bumping needed - always fetches latest from network
 
+const BUILD = '20260704u';
 const CACHE_NAME = 'roady-v1';
-const RUNTIME_CACHE = 'roady-runtime';
+// Version the runtime cache by build so stale ?v= assets and one-off
+// /?invite_token=… navigations don't accumulate forever — the activate
+// handler below deletes any cache whose name isn't in this set.
+const RUNTIME_CACHE = `roady-runtime-${BUILD}`;
+
+// CDN hosts we intentionally cache for offline boot. index.html loads these
+// without crossorigin, so their responses come back opaque (type 'opaque',
+// status 0); we cache them anyway, but ONLY for these explicit hosts.
+const CDN_HOSTS = ['cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
 // Install - activate immediately
 self.addEventListener('install', event => {
@@ -42,9 +51,8 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Skip cross-origin requests except CDN
-  if (!req.url.startsWith(self.location.origin) &&
-    !req.url.includes('cdn.jsdelivr.net')) {
+  // Skip cross-origin requests except allowlisted CDNs (scripts, styles, fonts)
+  if (url.origin !== self.location.origin && !CDN_HOSTS.includes(url.hostname)) {
     return;
   }
 
@@ -54,8 +62,20 @@ self.addEventListener('fetch', event => {
     // old build until the cache expires.
     fetch(event.request, req.mode === 'navigate' ? { cache: 'no-cache' } : undefined)
       .then(response => {
-        // Cache successful responses for offline use
-        if (response && response.status === 200) {
+        // Cache same-origin 200s normally. The CDN scripts/styles/fonts are
+        // loaded without crossorigin (see index.html), so their responses are
+        // opaque (type 'opaque', status 0) and would never satisfy
+        // status===200 — cache those too, but ONLY for allowlisted CDN hosts,
+        // so an offline boot still has a live shell. Skip query-string
+        // navigations (e.g. /?invite_token=…) so they don't pile up forever.
+        const sameOrigin = url.origin === self.location.origin;
+        const isCdn = CDN_HOSTS.includes(url.hostname);
+        const skipQueryNav = req.mode === 'navigate' && url.search !== '';
+        const cacheable = !skipQueryNav && response && (
+          (sameOrigin && response.status === 200) ||
+          (isCdn && (response.status === 200 || response.type === 'opaque'))
+        );
+        if (cacheable) {
           const responseToCache = response.clone();
           caches.open(RUNTIME_CACHE)
             .then(cache => cache.put(event.request, responseToCache));
@@ -69,9 +89,10 @@ self.addEventListener('fetch', event => {
             if (cachedResponse) {
               return cachedResponse;
             }
-            // Offline fallback for navigation
+            // Offline fallback for navigation. The shell is cached under '/',
+            // not '/index.html'; ignoreSearch so /?invite_token=… resolves too.
             if (event.request.mode === 'navigate') {
-              return caches.match('/index.html');
+              return caches.match('/', { ignoreSearch: true });
             }
           });
       })

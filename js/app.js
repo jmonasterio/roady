@@ -33,6 +33,11 @@ const MAX_DEVICES_PER_MEMBER = 5;
         showGigSetlist: false,       // gig set list dialog open
         performanceSetlist: null,    // setlist doc rendered full-screen, or null
 
+        // PWA install hint — shown when running in a browser tab (not installed)
+        showInstallHint: false,
+        installPlatform: null,        // 'ios' | 'android'
+        deferredInstallPrompt: null,  // captured beforeinstallprompt event
+
         // Deleted items state
         deletedItems: {
             gigs: [],
@@ -46,9 +51,6 @@ const MAX_DEVICES_PER_MEMBER = 5;
         },
         trashItemsPerPage: 10,
 
-        // Tenant state
-        showTenantSelection: false,
-        tenantIdInput: 'demo',
 
         // Band state
         userBands: [],
@@ -66,6 +68,8 @@ const MAX_DEVICES_PER_MEMBER = 5;
         addMemberAsSelf: false,   // "This is me" toggle in the add-member form
         editingBandMember: null,
         isCreatingBand: false,  // Prevent double submission
+        isCreatingInvite: false, // Prevent double-tap on Generate Invite Link
+        fatalError: null,        // Reactive fatal init error — drives the dialog
         
         // Invitation state (Members tab)
         showInviteMemberDialog: false,
@@ -124,6 +128,18 @@ const MAX_DEVICES_PER_MEMBER = 5;
         showLoadedItems: false,
         showPackedItems: false,
         isLoading: true,
+        // Visible-on-phone escape hatch: if isLoading is still true this long
+        // after boot, something is hung (dead signer, stuck fetch with no
+        // timeout, offline reconnect loop). There's no devtools on a phone
+        // PWA, so surface a banner with the on-device debug log + a reload
+        // button instead of leaving the user staring at a blank "Loading" nav
+        // with nothing to tap. Not gated on isAuthenticated — the hang can
+        // happen before auth ever completes.
+        stuckOnLoading: false,
+        _stuckLoadingTimer: null,
+        // True once init()'s own enableSync has run; gates saveOptions() from
+        // starting sync before tenant init during boot (see saveOptions).
+        _initDone: false,
 
         // Form data
         newEquipment: {
@@ -186,19 +202,13 @@ const MAX_DEVICES_PER_MEMBER = 5;
             isDangerous: false
         },
 
-        // Diagnostics state
-        showDiagnostics: false,
-        diagnosticsResults: {
-            jwtClaim: null,
-            mycouchResponse: null,
-            error: null
-        },
 
         // Snackbar state
         snackbar: {
             isOpen: false,
             message: '',
             action: null,
+            type: 'info',
             timeout: null
         },
 
@@ -285,7 +295,10 @@ const MAX_DEVICES_PER_MEMBER = 5;
                     // Bind us (the invitee) to the roster person the inviter tagged
                     // with this token, once the roster syncs. Best-effort now,
                     // reconciled on later loadData() calls if not yet synced.
-                    sessionStorage.setItem('pendingRosterLinkToken', token);
+                    // Durable (localStorage, not sessionStorage): the roster may
+                    // not have synced yet, and a tab close before it does would
+                    // otherwise orphan the invitee↔roster binding permanently.
+                    localStorage.setItem('pendingRosterLinkToken', token);
                     await this._linkRosterOnAccept(token);
                     
                     // Guest keys live only in this browser — orient the user
@@ -311,12 +324,24 @@ const MAX_DEVICES_PER_MEMBER = 5;
                     sessionStorage.removeItem('pendingInviteToken');
                     this.showSnackbar('Invitation has been revoked', 'error');
                     return false;
+                } else if (response.status === 400) {
+                    // Server maps already-redeemed / expired invites to 400. Clear
+                    // the token so a re-clicked link (common from chat/email)
+                    // doesn't re-POST a signed accept — and error toast — on every
+                    // startup for the rest of the tab session.
+                    console.warn('⚠️ Invitation already used or expired');
+                    sessionStorage.removeItem('pendingInviteToken');
+                    const detail = await response.text().catch(() => '');
+                    let msg = 'This invitation is no longer valid (already used or expired)';
+                    try { const j = JSON.parse(detail); if (j?.message || j?.detail) msg = j.message || j.detail; } catch (_) {}
+                    this.showSnackbar(msg, 'error');
+                    return false;
                 } else {
                     // Error bodies aren't guaranteed JSON (e.g. a bodyless 405
                     // from the static edge), so read text and fall back cleanly.
                     const detail = await response.text().catch(() => '');
                     let msg = `Server error: ${response.status}`;
-                    try { const j = JSON.parse(detail); if (j?.detail) msg = j.detail; } catch (_) {}
+                    try { const j = JSON.parse(detail); if (j?.message || j?.detail) msg = j.message || j.detail; } catch (_) {}
                     throw new Error(msg);
                 }
             } catch (e) {
@@ -334,14 +359,27 @@ const MAX_DEVICES_PER_MEMBER = 5;
             }
         },
 
-        // Initialize
+        // Initialize. Alpine auto-invokes init(); wrap _init so a thrown error
+        // surfaces in the reactive fatal-error dialog (the old @init DOM listener
+        // never fired, and window.fatalError wasn't reactive — the dialog could
+        // never open).
         async init() {
+            try {
+                await this._init();
+            } catch (error) {
+                console.error('❌ App initialization failed:', error);
+                this.fatalError = error;
+            }
+        },
+        async _init() {
             console.log('🚀 Roady App Initializing...');
+            this.initInstallHint();
             
             // CRITICAL: Parse invite token from URL before auth
             this.parseInviteTokenFromUrl();
             
             this.isLoading = true;
+            this._armStuckLoadingWatch();
 
             // 1. Wait for Nostr auth — suspend until the login overlay fires nostr-connected
             console.log('⏳ Waiting for Nostr auth...');
@@ -431,11 +469,17 @@ const MAX_DEVICES_PER_MEMBER = 5;
 
             // If loadBands failed (offline), try to restore last selected band from localStorage
             if (!this.currentBandTenantId) {
-                const lastSelectedBandId = localStorage.getItem('lastSelectedBandId');
-                if (lastSelectedBandId) {
-                    console.log('📚 Restored last selected band from localStorage:', lastSelectedBandId);
-                    this.currentBandTenantId = lastSelectedBandId;
-                    DB.setTenant(lastSelectedBandId);
+                const lastId = this._getLastSelectedBand();
+                // Adopt only when we can't contradict it: if bands loaded,
+                // require membership; if offline (none loaded), trust the
+                // per-user key — it was THIS pubkey's own last selection, so it
+                // can't be another account's band (the key is pubkey-scoped).
+                const okToAdopt = lastId && (this.userBands.length === 0
+                    || this.userBands.some(b => b._id === lastId));
+                if (okToAdopt) {
+                    console.log('📚 Restored last selected band:', lastId);
+                    this.currentBandTenantId = lastId;
+                    DB.setTenant(lastId);
                 }
             }
 
@@ -447,8 +491,17 @@ const MAX_DEVICES_PER_MEMBER = 5;
 
 
             // Initial render from local PouchDB (may be empty on new browser;
-            // db-sync-change will reload once remote data arrives).
-            await this.loadData();
+            // db-sync-change will reload once remote data arrives). Never let
+            // this strand the UI on "Loading" — a thrown error here (bad
+            // IndexedDB state, corrupt doc, etc.) must still clear isLoading
+            // below so the app renders with whatever loaded, instead of
+            // hanging forever on the loading screen.
+            try {
+                await this.loadData();
+            } catch (e) {
+                console.error('❌ loadData failed during init:', e);
+                this._logSyncError?.('Initial load failed: ' + (e?.message || 'unknown'));
+            }
 
             // Start sync AFTER the UI-critical loads. enableSync enqueues the
             // WS-envelope signature, and Auth's sign queue is serialized — put
@@ -457,6 +510,10 @@ const MAX_DEVICES_PER_MEMBER = 5;
             // "Loading". The tenant/bands signs must go first.
             this.setupSyncListeners();
             this.enableSync();
+            // Init's deliberate sync start is done — allow saveOptions() to run
+            // its own enableSync side effect from here on (it's suppressed
+            // during init to preserve the ordering above).
+            this._initDone = true;
 
             // First paint now. The band name is already set by loadBands(); the
             // band-details + members fetch below hits the API and can take tens
@@ -639,7 +696,12 @@ const MAX_DEVICES_PER_MEMBER = 5;
         reconnect() {
             this._stopRetry();
             this.signerOffline = false;
-            this.startBackgroundRetry();
+            // Manual reconnect: attempt NOW rather than sit through the 15s
+            // first-backoff that only belongs to AUTOMATIC retries. On failure
+            // _attemptReconnect falls into _scheduleRetry for the backoff ladder.
+            this.isRetrying = true;
+            this.retryAttempt = 0;
+            this._attemptReconnect();
         },
 
         // Fresh NIP-46 handshake for a permission denial. A plain reconnect()
@@ -660,7 +722,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
             this.bandMembers = await DB.getAllBandMembers();
             await this._rebuildRosterHashMap();
             // Reconcile a pending roster link (invitee side) once the roster syncs.
-            const _rosterLinkToken = sessionStorage.getItem('pendingRosterLinkToken');
+            const _rosterLinkToken = localStorage.getItem('pendingRosterLinkToken');
             if (_rosterLinkToken) await this._linkRosterOnAccept(_rosterLinkToken);
             this.songs = await DB.getAllSongs();
             this.setlistTemplates = await DB.getAllSetlistTemplates();
@@ -670,6 +732,13 @@ const MAX_DEVICES_PER_MEMBER = 5;
             this.deletedItems.gigs = await DB.getDeletedGigs();
             this.deletedItems.equipment = await DB.getDeletedEquipment();
             this.deletedItems.templates = await DB.getDeletedGigTypes();
+            // Clamp each page into range — restoring/purging the last item on a
+            // page would otherwise strand the view on an empty page with Next
+            // disabled and no way back except Previous.
+            for (const type of ['gigs', 'equipment', 'templates']) {
+                const max = this.getDeletedItemsPageCount(type);
+                if ((this.trashCurrentPage[type] || 1) > max) this.trashCurrentPage[type] = max;
+            }
         },
 
         getDeletedItemsPage(type, currentPage) {
@@ -741,6 +810,14 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 console.error('Failed to save options:', e);
             }
 
+            // Resolve the base and set it on Auth BEFORE any branch/return.
+            // Every downstream consumer (DB scoping, sync base, tenant fetch,
+            // debug-log upload) reads Auth.getMycouchBaseUrl(); the URL-switch
+            // branch below used to `return` before this ran, leaving sync
+            // pointed at the OLD server against a NEW-scoped local DB.
+            window.Auth.setMycouchBaseUrl(this.options.mycouchBaseUrl);
+            const resolvedUrl = window.Auth.getMycouchBaseUrl();
+
             // Update TenantManager if MyCouch URL changed
             if (window.tenantManager && this.options.mycouchBaseUrl) {
                 const oldUrl = window.tenantManager.mycouchBaseUrl;
@@ -749,7 +826,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
                     
                     // Check if database needs to switch (URL + username combination changed)
                     const username = window.Auth.getPubkey()?.slice(0, 16) || 'user';
-                    const newUrlHash = DB.hashRemoteUrl(this.options.mycouchBaseUrl);
+                    const newUrlHash = DB.hashRemoteUrl(resolvedUrl);
                     const oldUrlHash = DB.hashRemoteUrl(oldUrl);
                     
                     if (newUrlHash !== oldUrlHash) {
@@ -763,7 +840,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
                         
                         // Switch to new database (scoped by new URL + username)
                         const oldDbName = DB.db?.name || 'unknown';
-                        DB.setRemoteIdentity(this.options.mycouchBaseUrl, username);
+                        DB.setRemoteIdentity(resolvedUrl, username);
                         DB.init(); // This will create/switch to the new scoped database
                         const newDbName = DB.db?.name || 'unknown';
                         
@@ -773,7 +850,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
                         this.currentDbName = newDbName;
                         
                         // Update TenantManager with new URL
-                        window.tenantManager.mycouchBaseUrl = this.options.mycouchBaseUrl;
+                        window.tenantManager.mycouchBaseUrl = resolvedUrl;
                         
                         // Clear cached bands (will reload from new database)
                         this.userBands = [];
@@ -802,7 +879,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
                     } else {
                         // Same database scope, just update TenantManager
                         console.log('🔗 Same database scope, updating TenantManager:', this.options.mycouchBaseUrl);
-                        window.tenantManager.mycouchBaseUrl = this.options.mycouchBaseUrl;
+                        window.tenantManager.mycouchBaseUrl = resolvedUrl;
                         
                         // Restart retry loop with new URL (if one was active)
                         if (this.isRetrying || this.signerOffline) {
@@ -812,11 +889,11 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 }
             }
 
-            // Ensure sync runs against the resolved base. Empty option =
-            // same-origin (/__api__), NOT "disabled" — enableSync is idempotent
-            // and restarts itself when the base actually changed.
-            window.Auth.setMycouchBaseUrl(this.options.mycouchBaseUrl);
-            this.enableSync();
+            // Sync runs against the resolved base (set above). During init,
+            // defer to init()'s own enableSync AFTER tenant/bands load: starting
+            // here would enqueue the WS-envelope sign ahead of the tenant sign
+            // on Auth's serial queue and hang boot on a slow signer.
+            if (this._initDone) this.enableSync();
         },
 
         async loadSessionToken() {
@@ -1020,6 +1097,37 @@ const MAX_DEVICES_PER_MEMBER = 5;
             this.syncError = null;
         },
 
+        // Watches isLoading; if it's still true after STUCK_MS, flips
+        // stuckOnLoading so the always-visible banner (not gated on
+        // isAuthenticated) offers the debug log + a reload button. Clears
+        // itself the moment isLoading goes false, from any code path.
+        _armStuckLoadingWatch() {
+            const STUCK_MS = 8000;
+            clearTimeout(this._stuckLoadingTimer);
+            this.stuckOnLoading = false;
+            this._stuckLoadingTimer = setTimeout(() => {
+                if (this.isLoading) {
+                    window.DLog?.push('boot', 'stuck-loading banner shown (isLoading still true after ' + STUCK_MS + 'ms)');
+                    this.stuckOnLoading = true;
+                    this.refreshDebugLog();
+                }
+            }, STUCK_MS);
+            this.$watch('isLoading', (value) => {
+                if (!value) {
+                    clearTimeout(this._stuckLoadingTimer);
+                    this.stuckOnLoading = false;
+                }
+            });
+        },
+
+        dismissStuckLoading() {
+            this.stuckOnLoading = false;
+        },
+
+        reloadApp() {
+            window.location.reload();
+        },
+
         refreshDebugLog() {
             this.debugLogText = window.DLog ? window.DLog.text() : '(debug log unavailable)';
         },
@@ -1125,38 +1233,6 @@ const MAX_DEVICES_PER_MEMBER = 5;
             return 'Connected';
         },
 
-        // Tenant methods
-        async selectTenant() {
-            if (!this.tenantIdInput.trim()) return;
-
-            this.options.tenantId = this.tenantIdInput.trim();
-            await this.saveOptions();
-
-            // Set tenant in DB layer
-            DB.setTenant(this.options.tenantId);
-
-            // Hide dialog and load data
-            this.showTenantSelection = false;
-            this.isLoading = true;
-            await this.loadData();
-            await this.loadDeletedItems();
-            this.isLoading = false;
-            this.setupSyncListeners();
-
-            // Sync always runs against the resolved MyCouch base.
-            this.enableSync();
-        },
-
-        async switchBand() {
-            // Clear tenant and show selection dialog
-            this.options.tenantId = '';
-            await this.saveOptions();
-
-            // Reset input and show dialog
-            this.tenantIdInput = '';
-            this.showTenantSelection = true;
-            this.currentView = 'gigs'; // Reset to gigs view
-        },
 
         // Equipment methods
         async saveEquipment() {
@@ -1379,6 +1455,9 @@ const MAX_DEVICES_PER_MEMBER = 5;
                     const equipment = gigType.equipment || gigType.equipmentIds?.map(id => ({ equipmentId: id, quantity: 1 })) || [];
 
                     equipment.forEach(({ equipmentId, quantity }) => {
+                        // Skip equipment deleted from the catalog — otherwise the
+                        // gig keeps permanent "Unknown" rows once it's dirty.
+                        if (!this.equipment.some(e => e._id === equipmentId)) return;
                         for (let i = 1; i <= quantity; i++) {
                             newChecklist.push({
                                 equipmentId,
@@ -1396,8 +1475,10 @@ const MAX_DEVICES_PER_MEMBER = 5;
                         arrivalTime: this.newGig.arrivalTime,
                         doorsOpenTime: this.newGig.doorsOpenTime,
                         mapLink: this.newGig.mapLink,
-                        loadoutChecklist: [...newChecklist],
-                        loadinChecklist: [...newChecklist]
+                        // Per-item clones so a loadout toggle can't alias-flip the
+                        // matching loadin row (both lists share objects otherwise).
+                        loadoutChecklist: newChecklist.map(it => ({ ...it })),
+                        loadinChecklist: newChecklist.map(it => ({ ...it }))
                     });
                 } else {
                     // Just update name, date, and optional fields
@@ -1453,8 +1534,11 @@ const MAX_DEVICES_PER_MEMBER = 5;
             );
 
             if (confirmed) {
-                await DB.deleteGig(this.editingGig._id);
+                // Capture id/name BEFORE cancelGigEdit() nulls editingGig — the
+                // undo closure runs later, long after editingGig is gone.
+                const gigId = this.editingGig._id;
                 const gigName = this.editingGig.name;
+                await DB.deleteGig(gigId);
                 await this.loadData();
                 this.cancelGigEdit();
 
@@ -1462,7 +1546,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 this.showSnackbar(
                     `Deleted gig "${gigName}"`,
                     async () => {
-                        await DB.restoreGig(this.editingGig._id);
+                        await DB.restoreGig(gigId);
                         await this.loadData();
                     }
                 );
@@ -1524,36 +1608,51 @@ const MAX_DEVICES_PER_MEMBER = 5;
             this.gigChecklistMode = mode; // 'leavingForGig' or 'leavingFromGig'
             this.selectedGig = await DB.getGig(gigId);
 
-            // If gig is clean (not dirty), sync with current template
+            // If gig is clean (no checked items), re-sync its checklist with the
+            // current gig type — but never destroy manual additions.
             if (!this.gigHasChecklistProgress(this.selectedGig)) {
                 const gigType = this.gigTypes.find(t => t._id === this.selectedGig.gigTypeId);
                 if (gigType) {
-                    const templateEquipment = gigType.equipment || gigType.equipmentIds?.map(id => ({ equipmentId: id, quantity: 1 })) || [];
+                    const templateEquipment = gigType.equipment
+                        || gigType.equipmentIds?.map(id => ({ equipmentId: id, quantity: 1 }))
+                        || [];
+                    const templateIds = new Set(templateEquipment.map(e => e.equipmentId));
 
-                    // Build new checklists from current template (only include non-deleted equipment)
-                    const newChecklist = [];
+                    // Fresh template portion (skip equipment deleted from the catalog).
+                    const templateChecklist = [];
                     templateEquipment.forEach(({ equipmentId, quantity }) => {
-                        // Only add if equipment still exists (not deleted)
                         if (this.equipment.some(e => e._id === equipmentId)) {
                             for (let i = 1; i <= quantity; i++) {
-                                newChecklist.push({
-                                    equipmentId,
-                                    itemNumber: i,
-                                    checked: false
-                                });
+                                templateChecklist.push({ equipmentId, itemNumber: i, checked: false });
                             }
                         }
                     });
 
-                    // Only update if equipment changed
-                    const currentEquipmentIds = new Set(this.selectedGig.loadoutChecklist.map(i => i.equipmentId));
-                    const newEquipmentIds = new Set(newChecklist.map(i => i.equipmentId));
+                    // Extras = current items the template doesn't produce. Keep
+                    // them — this is the manually added gear the old resync
+                    // silently deleted (even after "No, Only This Gig").
+                    const cur = this.selectedGig.loadoutChecklist || [];
+                    const extras = cur
+                        .filter(i => !templateIds.has(i.equipmentId))
+                        .map(i => ({ ...i, checked: false }));
 
-                    if (currentEquipmentIds.size !== newEquipmentIds.size ||
-                        ![...currentEquipmentIds].every(id => newEquipmentIds.has(id))) {
-                        this.selectedGig.loadoutChecklist = newChecklist;
-                        this.selectedGig.loadinChecklist = [...newChecklist];
+                    // Rebuild only when the template portion actually changed —
+                    // compare full (equipmentId,itemNumber) signatures so a
+                    // quantity bump (2→3 of one item) is caught, not just the
+                    // add/remove of distinct equipment.
+                    const sig = list => list
+                        .map(i => `${i.equipmentId}#${i.itemNumber ?? 1}`)
+                        .sort()
+                        .join(',');
+                    const curTemplatePortion = cur.filter(i => templateIds.has(i.equipmentId));
+                    if (sig(curTemplatePortion) !== sig(templateChecklist)) {
+                        const rebuilt = [...templateChecklist, ...extras];
+                        this.selectedGig.loadoutChecklist = rebuilt;
+                        // Per-item clones so a loadout toggle can't alias-flip the
+                        // matching loadin row.
+                        this.selectedGig.loadinChecklist = rebuilt.map(it => ({ ...it }));
                         await DB.updateGig(this.selectedGig);
+                        this.selectedGig = await DB.getGig(this.selectedGigId);
                     }
                 }
             }
@@ -1572,29 +1671,33 @@ const MAX_DEVICES_PER_MEMBER = 5;
 
         async toggleChecklistItem(checklistType, index) {
             if (!this.selectedGig) return;
-
-            const checklist = checklistType === 'loadout'
+            // Apply the user's INTENDED value to the FRESH row, not a flip of
+            // the possibly-stale in-memory copy: writing back a stale doc makes
+            // the server 3-way merge read a bandmate's synced checkmarks as
+            // deliberate un-checks and revert them.
+            const displayed = checklistType === 'loadout'
                 ? this.selectedGig.loadoutChecklist
                 : this.selectedGig.loadinChecklist;
-
-            checklist[index].checked = !checklist[index].checked;
-
-            await DB.updateGig(this.selectedGig);
+            const intended = !(displayed?.[index]?.checked);
+            const fresh = await DB.getGig(this.selectedGigId);
+            const target = fresh && (checklistType === 'loadout'
+                ? fresh.loadoutChecklist
+                : fresh.loadinChecklist);
+            if (!target || !target[index]) return;
+            target[index].checked = intended;
+            await DB.updateGig(fresh);
             await this.loadData();
-
-            // Refresh selected gig
             this.selectedGig = await DB.getGig(this.selectedGigId);
         },
 
         async toggleLoadinItem(index) {
             if (!this.selectedGig) return;
-
-            this.selectedGig.loadinChecklist[index].checked = !this.selectedGig.loadinChecklist[index].checked;
-
-            await DB.updateGig(this.selectedGig);
+            const intended = !(this.selectedGig.loadinChecklist?.[index]?.checked);
+            const fresh = await DB.getGig(this.selectedGigId);
+            if (!fresh?.loadinChecklist?.[index]) return;
+            fresh.loadinChecklist[index].checked = intended;
+            await DB.updateGig(fresh);
             await this.loadData();
-
-            // Refresh selected gig
             this.selectedGig = await DB.getGig(this.selectedGigId);
         },
 
@@ -1611,8 +1714,10 @@ const MAX_DEVICES_PER_MEMBER = 5;
         // stays unchecked — the user still ticks it once actually packed.
         async markBroughtAnyway(index) {
             if (!this.selectedGig) return;
-            this.selectedGig.loadoutChecklist[index].checked = true;
-            await DB.updateGig(this.selectedGig);
+            const fresh = await DB.getGig(this.selectedGigId);
+            if (!fresh?.loadoutChecklist?.[index]) return;
+            fresh.loadoutChecklist[index].checked = true;
+            await DB.updateGig(fresh);
             await this.loadData();
             this.selectedGig = await DB.getGig(this.selectedGigId);
         },
@@ -1625,7 +1730,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
                     originalIndex: index,
                     loadinChecked: item.checked
                 }))
-                .filter((item, index) => gig.loadoutChecklist[index].checked);
+                .filter((item, index) => gig.loadoutChecklist[index]?.checked);
         },
 
         getItemsNotBrought(gig) {
@@ -1636,7 +1741,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
                     originalIndex: index,
                     loadinChecked: item.checked
                 }))
-                .filter((item, index) => !gig.loadoutChecklist[index].checked);
+                .filter((item, index) => !gig.loadoutChecklist[index]?.checked);
         },
 
         getFilteredGigs() {
@@ -1811,7 +1916,16 @@ const MAX_DEVICES_PER_MEMBER = 5;
         },
 
         formatDate(dateString) {
-            const date = new Date(dateString);
+            // Parse "YYYY-MM-DD" as a LOCAL date, not UTC midnight. `new
+            // Date("YYYY-MM-DD")` parses as UTC, so toLocaleDateString() in
+            // any timezone behind UTC (all of the Americas) renders the
+            // previous calendar day — the gig list showed a stale-looking
+            // date after an edit even though the stored value was correct
+            // (the edit dialog's <input type="date"> binds the raw string,
+            // no Date parsing, so it never showed the shift).
+            if (!dateString) return '';
+            const [year, month, day] = dateString.split('-').map(Number);
+            const date = new Date(year, month - 1, day);
             return date.toLocaleDateString('en-US', {
                 weekday: 'short',
                 year: 'numeric',
@@ -1873,10 +1987,19 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 clearTimeout(this.snackbar.timeout);
             }
 
+            // Tolerate the legacy (message, type) call shape: ~30 sites pass
+            // 'error'/'warning' as the 2nd arg, but the real signature is
+            // (message, undoAction). Treat a string as a display type (no undo
+            // button); only a function is a real undo action. Without this,
+            // every error toast renders an Undo that throws "action is not a
+            // function" when tapped.
+            const action = typeof undoAction === 'function' ? undoAction : null;
+            const type = typeof undoAction === 'string' ? undoAction : 'info';
             this.snackbar = {
                 isOpen: true,
                 message,
-                action: undoAction,
+                action,
+                type,
                 timeout: setTimeout(() => {
                     this.snackbar.isOpen = false;
                 }, duration)
@@ -1898,6 +2021,62 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 clearTimeout(this.snackbar.timeout);
             }
             this.snackbar.isOpen = false;
+        },
+
+        // --- PWA install hint ("Add to Home Screen") ---
+        _isStandalone() {
+            return window.matchMedia?.('(display-mode: standalone)').matches
+                || window.navigator.standalone === true
+                || document.referrer.startsWith('android-app://');
+        },
+        initInstallHint() {
+            if (this._installHintReady) return;
+            this._installHintReady = true;
+            if (this._isStandalone()) return;              // already installed
+            if (localStorage.getItem('roady_install_dismissed') === '1') return;
+
+            const ua = navigator.userAgent || '';
+            const isIOS = /iphone|ipad|ipod/i.test(ua)
+                || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+            if (isIOS) {
+                // iOS has no beforeinstallprompt; only Safari can add to home
+                // screen (Chrome/Firefox/Edge on iOS cannot), so gate on it.
+                const iosOtherBrowser = /crios|fxios|edgios|opios|mercury/i.test(ua);
+                if (!iosOtherBrowser) {
+                    this.installPlatform = 'ios';
+                    this.showInstallHint = true;
+                }
+                return;
+            }
+
+            // Android / desktop Chromium: use the native prompt when offered.
+            const arm = () => {
+                if (window.__roadyInstallPrompt) {
+                    this.deferredInstallPrompt = window.__roadyInstallPrompt;
+                    this.installPlatform = 'android';
+                    this.showInstallHint = true;
+                }
+            };
+            arm();                                          // maybe already fired
+            window.addEventListener('roady-installable', arm);
+            window.addEventListener('appinstalled', () => {
+                this.deferredInstallPrompt = null;
+                window.__roadyInstallPrompt = null;
+                this.dismissInstallHint();
+            });
+        },
+        async promptInstall() {
+            const e = this.deferredInstallPrompt;
+            if (!e) return;
+            e.prompt();
+            try { await e.userChoice; } catch (_) {}
+            this.deferredInstallPrompt = null;
+            window.__roadyInstallPrompt = null;
+            this.showInstallHint = false;
+        },
+        dismissInstallHint() {
+            this.showInstallHint = false;
+            try { localStorage.setItem('roady_install_dismissed', '1'); } catch (_) {}
         },
 
         // ===============================================================
@@ -1927,8 +2106,11 @@ const MAX_DEVICES_PER_MEMBER = 5;
         formatRuntime(sec) {             // human total, e.g. "1h 23m"
             sec = Number(sec) || 0;
             if (!sec) return '—';
-            const h = Math.floor(sec / 3600);
-            const m = Math.round((sec % 3600) / 60);
+            // Round to whole minutes FIRST, then split — rounding the remainder
+            // after Math.floor(h) produced "1h 60m" for 59.5–60 min remainders.
+            const totalMin = Math.round(sec / 60);
+            const h = Math.floor(totalMin / 60);
+            const m = totalMin % 60;
             return h > 0 ? `${h}h ${m}m` : `${m}m`;
         },
         sectionDuration(section) {
@@ -2080,26 +2262,34 @@ const MAX_DEVICES_PER_MEMBER = 5;
             [arr[index], arr[j]] = [arr[j], arr[index]];
         },
         async addSongToSection(sectionId, songId, newTitle) {
-            const section = this.editingSetlist?.sections.find(s => s.id === sectionId);
-            if (!section) return false;
-            let id = songId;
-            let title = '';
-            let durationSec = 0;
-            if (!id && (newTitle || '').trim()) {
-                const res = await DB.addSong({ title: newTitle.trim() });
-                id = res.id;
-                title = newTitle.trim();
-                await this.loadData();
-            } else if (id) {
-                const song = this.songs.find(s => s._id === id);
-                if (!song) return false;
-                title = song.title;
-                durationSec = Number(song.durationSec) || 0;
-            } else {
-                return false;
+            // Guard double-tap: two rapid clicks would both take the new-song
+            // branch and create two songs + two rows.
+            if (this._addingSong) return false;
+            this._addingSong = true;
+            try {
+                const section = this.editingSetlist?.sections.find(s => s.id === sectionId);
+                if (!section) return false;
+                let id = songId;
+                let title = '';
+                let durationSec = 0;
+                if (!id && (newTitle || '').trim()) {
+                    const res = await DB.addSong({ title: newTitle.trim() });
+                    id = res.id;
+                    title = newTitle.trim();
+                    await this.loadData();
+                } else if (id) {
+                    const song = this.songs.find(s => s._id === id);
+                    if (!song) return false;
+                    title = song.title;
+                    durationSec = Number(song.durationSec) || 0;
+                } else {
+                    return false;
+                }
+                section.items.push({ songId: id, title, durationSec });
+                return true;
+            } finally {
+                this._addingSong = false;
             }
-            section.items.push({ songId: id, title, durationSec });
-            return true;
         },
         removeSongFromSection(sectionId, index) {
             const section = this.editingSetlist?.sections.find(s => s.id === sectionId);
@@ -2134,6 +2324,19 @@ const MAX_DEVICES_PER_MEMBER = 5;
         },
         async pickTemplateForGig() {
             if (!this.newGigSetlistTemplateId) return;
+            await DB.addSetlistFromTemplate(this.selectedGigId, this.newGigSetlistTemplateId);
+            await this.loadData();
+            this.gigSetlist = await DB.getSetlistForGig(this.selectedGigId);
+            this.newGigSetlistTemplateId = '';
+            this.setlistMode = 'view';
+        },
+        // Swap an empty gig set list (e.g. a just-created blank) for one copied
+        // from a template. Only offered when the current list has no songs, so
+        // deleting the blank first loses nothing and keeps the gig 1:1.
+        async useTemplateForGig() {
+            if (!this.newGigSetlistTemplateId || !this.gigSetlist) return;
+            if (this.setlistSongCount(this.gigSetlist) > 0) return;
+            await DB.deleteSetlist(this.gigSetlist._id);
             await DB.addSetlistFromTemplate(this.selectedGigId, this.newGigSetlistTemplateId);
             await this.loadData();
             this.gigSetlist = await DB.getSetlistForGig(this.selectedGigId);
@@ -2238,6 +2441,9 @@ const MAX_DEVICES_PER_MEMBER = 5;
                  const tenantsResponse = await window.tenantManager.getMyTenants();
                  this.userBands = Array.isArray(tenantsResponse) ? tenantsResponse : [];
                  console.log('✅ Tenants refreshed from server:', this.userBands);
+                // Server-authoritative membership list → let the DAL refuse to
+                // persist any other tenant's docs the change feed over-shares.
+                DB.setKnownTenants(this.userBands.map(b => b._id));
                  
                  // VALIDATION: Check if user.tenants was corrupted with full tenant documents
                  // This catches the data corruption bug described in INVITATION_ACCEPTANCE_CODE_REVIEW.md
@@ -2258,11 +2464,11 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 if (this.currentBandTenantId && this.userBands.some(b => b._id === this.currentBandTenantId)) {
                     console.log('✅ Keeping current band:', this.currentBandTenantId);
                 } else {
-                    const lastSelectedBandId = localStorage.getItem('lastSelectedBandId');
-                    if (lastSelectedBandId && this.userBands.some(b => b._id === lastSelectedBandId)) {
+                    const lastId = this._getLastSelectedBand();
+                    if (lastId && this.userBands.some(b => b._id === lastId)) {
                         // Use last selected band if it still exists
-                        this.currentBandTenantId = lastSelectedBandId;
-                        console.log('✅ Using last selected band:', lastSelectedBandId);
+                        this.currentBandTenantId = lastId;
+                        console.log('✅ Using last selected band:', lastId);
                     } else {
                         // Fall back to current tenant or first band
                         const currentTenant = window.tenantManager.getCurrentTenant();
@@ -2311,7 +2517,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 DB.setTenant(bandTenantId);
                 
                 // Save last selected band to local storage
-                localStorage.setItem('lastSelectedBandId', bandTenantId);
+                this._setLastSelectedBand(bandTenantId);
                 
                 // Reload data for new band
                 await this.loadData();
@@ -2373,8 +2579,8 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 try {
                     console.log('📤 Creating band via TenantManager.createTenant:', bandName);
                     const newTenant = await window.tenantManager.createTenant({ name: bandName });
-                    const newBandId = newTenant.tenantId; // bare uuid for sub-systems that expect it
                     const internalId = newTenant._id;     // `tenant_<...>` for DAL + active-tenant
+                    // (newTenant.tenantId is the bare uuid — never use it as the active tenant)
                     console.log('✅ Band created:', newTenant);
 
                     this.showCreateBandDialog = false;
@@ -2410,7 +2616,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
 
                     
                     // Switch to new band (becomes active in JWT)
-                    await this.switchBand(newBandId);
+                    await this.switchBand(internalId);
                     this.showSnackbar(`Created new band: ${bandName}`);
                 } catch (e) {
                     console.error('❌ Failed to create band via backend:', e);
@@ -2563,7 +2769,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
             const toEvict = opts.oldest != null
                 ? keys.slice(0, Math.max(0, opts.oldest))
                 : keys.slice();
-            if (toEvict.length === 0) return;
+            if (toEvict.length === 0) return 0;
             const failed = [];
             for (const pk of toEvict) {
                 try {
@@ -2586,26 +2792,42 @@ const MAX_DEVICES_PER_MEMBER = 5;
             if (failed.length) {
                 this.showSnackbar(`Could not revoke ${failed.length} device(s) — check you're an admin`, 'error');
             }
+            return failed.length;
         },
 
         // Open the invite dialog to add another device for an already-linked
         // roster member (additive — existing devices keep working).
-        openAddDeviceDialog(member) {
+        async openAddDeviceDialog(member) {
             this.inviteMode = 'add';
             this.inviteMemberEmail = '';
-            this.inviteMemberRole = 'member';
+            this.inviteMemberRole = await this._memberTenantRole(member);
             this.inviteRosterMemberId = member?._id || '';
             this.inviteNewMemberName = '';
             this.inviteNewMemberRole = '';
             this.showInviteMemberDialog = true;
         },
 
+        // The tenant role (owner/admin/member) currently granted to a roster
+        // member's device keys, so an add/replace-device invite defaults to
+        // their real role instead of silently downgrading an admin to member.
+        // Owner clamps to admin — the server refuses invite-as-owner.
+        async _memberTenantRole(member) {
+            try {
+                const pks = this.memberPubkeys(member);
+                if (!pks.length || !this.currentBandMembers?.length) return 'member';
+                const hashes = new Set(await Promise.all(pks.map(pk => window.Auth.hashPubkey(pk))));
+                const tm = this.currentBandMembers.find(m => hashes.has(m.userHash));
+                const role = tm?.role || 'member';
+                return role === 'owner' ? 'admin' : role;
+            } catch (_) { return 'member'; }
+        },
+
         // Open the invite dialog to replace a lost device — generating the
         // invite revokes ALL of this member's current keys first.
-        openReplaceDeviceDialog(member) {
+        async openReplaceDeviceDialog(member) {
             this.inviteMode = 'replace';
             this.inviteMemberEmail = '';
-            this.inviteMemberRole = 'member';
+            this.inviteMemberRole = await this._memberTenantRole(member);
             this.inviteRosterMemberId = member?._id || '';
             this.inviteNewMemberName = '';
             this.inviteNewMemberRole = '';
@@ -2756,9 +2978,15 @@ const MAX_DEVICES_PER_MEMBER = 5;
             );
             if (!confirmed) return;
             try {
-                // Revoke tenant access for every device key before deleting the
-                // roster entry — otherwise their keys stay authorized. Needs admin.
-                if (linked) await this._evictMemberKeys(member);
+                // Revoke tenant access for every device key BEFORE deleting the
+                // roster entry. If ANY revocation fails (offline / not admin),
+                // keep the roster entry: deleting it would hide the person from
+                // every UI while their keys stay authorized, nothing left to
+                // retry from. _evictMemberKeys already surfaced the reason.
+                if (linked) {
+                    const failed = await this._evictMemberKeys(member);
+                    if (failed) return;
+                }
                 await DB.deleteBandMember(member._id);
                 this.bandMembers = await DB.getAllBandMembers();
             } catch (e) {
@@ -2778,6 +3006,10 @@ const MAX_DEVICES_PER_MEMBER = 5;
         },
 
         async inviteMember() {
+            // Guard double-tap: generating twice mints two live tokens (and in
+            // replace mode runs the key revocation twice).
+            if (this.isCreatingInvite) return;
+            this.isCreatingInvite = true;
             try {
                 // Resolve the roster member to link this invite to, creating one
                 // inline when the user chose "＋ Create new roster member".
@@ -2808,6 +3040,12 @@ const MAX_DEVICES_PER_MEMBER = 5;
                         rm = this.bandMembers.find(m => m._id === inviteRosterId) || rm;
                     }
                 }
+                // Re-invite: revoke this roster member's previous still-redeemable
+                // invite so the old link can't also be redeemed (orphaned token).
+                if (rm?.pendingInviteId) {
+                    try { await window.tenantManager.revokeInvitation(this.currentBandTenantId, rm.pendingInviteId); }
+                    catch (e) { console.warn('revoke prior invite failed:', e.message); }
+                }
 
                 // Route through TenantManager so the request uses the resolved
                 // /__api__ base (raw options.mycouchBaseUrl '' would 405).
@@ -2825,6 +3063,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 // link binds the invitee's key to this roster person.
                 if (rm) {
                     rm.pendingInviteToken = inviteToken;
+                    rm.pendingInviteId = invitationData.id || null;
                     if (this.inviteMemberEmail?.trim()) rm.email = this.inviteMemberEmail.trim();
                     try {
                         await DB.updateBandMember(rm);
@@ -2844,6 +3083,8 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 } else {
                     this.showSnackbar('Error generating invitation: ' + e.message, 'error');
                 }
+            } finally {
+                this.isCreatingInvite = false;
             }
         },
 
@@ -2868,7 +3109,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
                 delete target.pendingInviteToken;
                 await DB.updateBandMember(target);
                 this.bandMembers = await DB.getAllBandMembers();
-                sessionStorage.removeItem('pendingRosterLinkToken');
+                localStorage.removeItem('pendingRosterLinkToken');
                 console.log('🔗 Linked to roster member:', target.name);
             } catch (e) {
                 console.warn('roster link on accept failed:', e.message);
@@ -2964,6 +3205,41 @@ const MAX_DEVICES_PER_MEMBER = 5;
             }
         },
 
+        // Last-selected-band persistence, keyed per pubkey so switching Nostr
+        // accounts in the same browser can't adopt the previous account's band
+        // (which would stamp offline writes with a tenant this user can't
+        // access — the server drops them as forbidden).
+        _lastBandKey() {
+            const pk = window.Auth?.getPubkey?.() || '';
+            return pk ? `lastSelectedBandId_${pk.slice(0, 16)}` : 'lastSelectedBandId';
+        },
+        _getLastSelectedBand() {
+            return localStorage.getItem(this._lastBandKey());
+        },
+        _setLastSelectedBand(id) {
+            if (id) localStorage.setItem(this._lastBandKey(), id);
+        },
+        _clearLastSelectedBand() {
+            localStorage.removeItem(this._lastBandKey());
+        },
+
+        // Reset all active-band state after leaving/deleting the last band.
+        // Without clearing DB.currentTenant + the loaded collections, the UI
+        // keeps rendering the departed band and any new write is stamped with
+        // (and stranded under) the tenant the user no longer belongs to.
+        _clearActiveBandState() {
+            this.currentBandTenantId = null;
+            this.currentBandName = '';
+            DB.setTenant(null);
+            this._clearLastSelectedBand();
+            this.equipment = [];
+            this.gigs = [];
+            this.bandMembers = [];
+            this.songs = [];
+            this.setlistTemplates = [];
+            this.gigSetlist = null;
+        },
+
         async leaveBand() {
             try {
                 const bandToLeave = this.userBands.find(
@@ -2975,7 +3251,14 @@ const MAX_DEVICES_PER_MEMBER = 5;
                     await window.tenantManager.leaveTenant(this.currentBandTenantId);
                 } catch (e) {
                     if (e.message?.includes('403')) {
-                        this.showSnackbar('Owners cannot leave. Transfer ownership or delete the band.', 'error');
+                        this.showSnackbar('Owners can’t leave. Transfer ownership or delete the band instead.', 'error');
+                        return;
+                    }
+                    if (e.message?.includes('404')) {
+                        // Self-leave endpoint isn't deployed on this backend yet —
+                        // don't clear local state (the server still has us as a
+                        // member and would re-sync the band back on next load).
+                        this.showSnackbar('Leaving the band isn’t available yet — try again later.', 'error');
                         return;
                     }
                     throw e;
@@ -2991,11 +3274,11 @@ const MAX_DEVICES_PER_MEMBER = 5;
                     this.currentBandTenantId = this.userBands[0]._id;
                     this.updateCurrentBandName();
                     DB.setTenant(this.userBands[0]._id);
+                    this._setLastSelectedBand(this.userBands[0]._id);
                     await this.loadData();
                     await this.loadBandDetails();
                 } else {
-                    this.currentBandTenantId = null;
-                    this.currentBandName = '';
+                    this._clearActiveBandState();
                 }
 
                 this.showSnackbar(`Left "${leavingBandName}"`);
@@ -3041,11 +3324,11 @@ const MAX_DEVICES_PER_MEMBER = 5;
                     this.currentBandTenantId = this.userBands[0]._id;
                     this.updateCurrentBandName();
                     DB.setTenant(this.userBands[0]._id);
+                    this._setLastSelectedBand(this.userBands[0]._id);
                     await this.loadData();
                     await this.loadBandDetails();
                 } else {
-                    this.currentBandTenantId = null;
-                    this.currentBandName = '';
+                    this._clearActiveBandState();
                 }
 
                 this.showSnackbar(`Band "${deletedBandName}" has been deleted`);

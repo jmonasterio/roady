@@ -76,7 +76,13 @@ window.Sync = {
             this._setStatus('error');
             return false;
         }
+        // Recover writes stranded 'inflight' by a refresh/suspend during a
+        // prior drain — outboxNext ignores them otherwise (silent data loss).
+        try { await DB.outboxRequeueInflight(); } catch (_) {}
         this._installResumeKick();
+        // Clear any queued reconnect so start() can't race a pending _connect
+        // and spawn a parallel socket.
+        if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
         this._connect();
         this._scheduleDrain(50);
         return true;
@@ -115,6 +121,10 @@ window.Sync = {
     // ---------------------------------------------------------------
     async _connect() {
         if (this.closing) return;
+        // No-op if a socket is already live or dialing — a second _connect
+        // (queued reconnect racing a resume kick) would strand the first as a
+        // zombie socket invisible to stop().
+        if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
         const dbId = DB.DB_ID;
         const wsBase = this.url.replace(/^http/i, 'ws');
         const wsUrl = `${wsBase}/${dbId}/_ws`;
@@ -164,14 +174,17 @@ window.Sync = {
             try {
                 const lastSeq = await DB.getLastSeq();
                 const clientId = await DB.getClientId();
+                // Send the full i64 cursor — `| 0` truncated it to 32 bits, so
+                // past ~2.1B change_log rows the hello asks for the wrong seq.
+                const seq = Number.isFinite(lastSeq) ? lastSeq : 0;
                 const hello = {
                     type: 'hello',
                     auth: envelope,
-                    lastSeq: lastSeq | 0,
+                    lastSeq: seq,
                 };
                 if (clientId) hello.clientId = clientId;
                 ws.send(JSON.stringify(hello));
-                window.DLog?.push('ws', `open — hello sent (lastSeq ${lastSeq | 0})`);
+                window.DLog?.push('ws', `open — hello sent (lastSeq ${seq})`);
             } catch (e) {
                 console.error('[Sync] hello failed:', e);
                 try { ws.close(); } catch (_) {}
@@ -179,10 +192,15 @@ window.Sync = {
         };
         ws.onmessage = (ev) => { this._onMessage(ev.data); };
         ws.onerror = (e) => {
+            if (this.ws !== ws) return;
             console.debug('[Sync] WS error event', e?.type || e);
         };
         ws.onclose = (ev) => {
             window.DLog?.push('ws', `closed code=${ev.code}${ev.reason ? ' reason=' + ev.reason : ''}`);
+            // A stale socket (already replaced by a newer _connect) must not
+            // null the live handle or schedule another reconnect — that spawns
+            // a parallel socket. Only the current socket drives transitions.
+            if (this.ws !== ws) return;
             this.ws = null;
             if (this.closing) return;
             // 4401 = auth_failed / pubkey_changed (closed deliberately by hub)
@@ -245,15 +263,17 @@ window.Sync = {
         try { local = await DB.countLiveDocs(); } catch (_) { return; }
         if (local >= server) return;
         if (this._autoHealed) {
-            window.DLog?.push('sync', `auto-heal: still short (local ${local} < server ${server}) after resync — not looping`);
+            window.DLog?.push('sync', `auto-heal: still short (local ${local} < server ${server}) after paging — genuine apply failure, not looping`);
             return;
         }
         this._autoHealed = true;
-        window.DLog?.push('sync', `auto-heal: local ${local} < server ${server} — resync from seq 0`);
-        await DB.setLastSeq(0);
-        this.reconnectAttempts = 0;
-        if (this.ws) { try { this.ws.close(); } catch (_) {} this.ws = null; }
-        this._connect();
+        // Local is behind the server's live count. Because catchup never
+        // advances the cursor past an unapplied change, the missing rows are
+        // ABOVE the cursor — page /changes forward to head. NEVER rewind to 0:
+        // a pagination shortfall would replay the same page and converge at one
+        // page per session (or never).
+        window.DLog?.push('sync', `auto-heal: local ${local} < server ${server} — paging /changes to head`);
+        await this._catchupToHead();
     },
 
     // ---------------------------------------------------------------
@@ -303,6 +323,12 @@ window.Sync = {
                 const target = clean && typeof frame.last_seq === 'number' ? frame.last_seq : lastGood;
                 await DB.setLastSeq(target);
                 window.DLog?.push('sync', `catchup: ${applied}/${changes.length} applied, lastSeq→${target}`);
+                // A full catchup page means the server capped the replay; more
+                // history may sit above it. Page /changes to head so a fresh
+                // device isn't stuck at one page per session.
+                if (clean && changes.length >= this.CHANGES_LIMIT) {
+                    await this._catchupToHead();
+                }
                 await this._maybeAutoHeal();
                 window.dispatchEvent(new CustomEvent('db-sync-change', {
                     detail: { catchup: true, count: changes.length },
@@ -379,7 +405,7 @@ window.Sync = {
         if (this.closing) return;
         try {
             const since = await DB.getLastSeq();
-            const url = `${this.url}/${DB.DB_ID}/changes?since=${since}&limit=${this.CHANGES_LIMIT}`;
+            const url = `${this.url}/${DB.DB_ID}/changes?since=${since}&limit=${this.CHANGES_LIMIT}&include_docs=1`;
             const res = await window.Auth.fetchWithAuth(url, { method: 'GET' });
             if (res.ok) {
                 this._pollFailures = 0;
@@ -398,9 +424,14 @@ window.Sync = {
                 console.error('[Sync] /changes auth rejected');
                 window.DLog?.push('poll', '401 unauthorized');
                 this._setStatus('error');
+                // A persistent 401/5xx still costs a sign per poll — back off
+                // like a transport failure, or a broken signer re-signs at the
+                // full 10s cadence forever.
+                this._pollFailures = Math.min((this._pollFailures || 0) + 1, 6);
             } else {
                 console.debug('[Sync] /changes returned', res.status);
                 window.DLog?.push('poll', `HTTP ${res.status}`);
+                this._pollFailures = Math.min((this._pollFailures || 0) + 1, 6);
             }
         } catch (e) {
             // Signing/transport failure. Every poll costs a remote sign_event —
@@ -421,6 +452,55 @@ window.Sync = {
                     interval,
                 );
             }
+        }
+    },
+
+    // Page `/changes` forward from the current cursor to head, applying each
+    // page and advancing the cursor only past changes that actually applied.
+    // Used after a full WS catchup page and by _maybeAutoHeal — replaces the
+    // old rewind-to-0 heal (which looped on a pagination shortfall). Bounded:
+    // stops at the first short page, on transport failure, or when a page makes
+    // no forward progress (a poison change the server keeps re-sending).
+    async _catchupToHead() {
+        if (this.closing) return;
+        for (let page = 0; page < 500; page++) {
+            if (this.closing) return;
+            const since = await DB.getLastSeq();
+            let body;
+            try {
+                const url = `${this.url}/${DB.DB_ID}/changes?since=${since}&limit=${this.CHANGES_LIMIT}&include_docs=1`;
+                const res = await window.Auth.fetchWithAuth(url, { method: 'GET' });
+                if (!res.ok) {
+                    window.DLog?.push('sync', `catchup-to-head HTTP ${res.status} — stop`);
+                    break;
+                }
+                body = await res.json();
+            } catch (e) {
+                window.DLog?.push('sync', `catchup-to-head transport failed: ${e?.message || e}`);
+                break;
+            }
+            const changes = body.changes || [];
+            let applied = 0;
+            let lastGood = since;
+            for (const ch of changes) {
+                try {
+                    await DB.applyServerChange(ch);
+                    applied++;
+                    if (typeof ch.seq === 'number' && ch.seq > lastGood) lastGood = ch.seq;
+                } catch (e) {
+                    window.DLog?.push('sync', `catchup-to-head apply FAILED seq=${ch.seq} doc=${ch.doc_id}: ${e?.message || e}`);
+                    break;
+                }
+            }
+            const clean = applied === changes.length;
+            const target = clean && typeof body.last_seq === 'number' ? body.last_seq : lastGood;
+            await DB.setLastSeq(target);
+            window.dispatchEvent(new CustomEvent('db-sync-change', {
+                detail: { catchup: true, count: changes.length },
+            }));
+            window.DLog?.push('sync', `catchup-to-head: ${applied}/${changes.length} applied, lastSeq→${target}`);
+            if (changes.length < this.CHANGES_LIMIT) break; // reached head
+            if (target <= since) break;                     // no progress (poison)
         }
     },
 
@@ -465,7 +545,7 @@ window.Sync = {
     async _drainEntry(entry) {
         if ((entry.attempts || 0) >= this.OUTBOX_MAX_ATTEMPTS) {
             console.error('[Sync] outbox entry exceeded retry limit; dropping', entry);
-            await DB.db.outbox.delete(entry.id);
+            await DB.outboxDrop(entry.id);
             window.dispatchEvent(new CustomEvent('db-sync-error', {
                 detail: { code: 'outbox_dropped', doc_id: entry.doc_id },
             }));
@@ -473,29 +553,43 @@ window.Sync = {
         }
 
         await DB.outboxMarkInflight(entry.id);
-        const url = `${this.url}/${entry.db_id}/${encodeURIComponent(entry.doc_id)}`;
-        const payload = {
-            doc_type: entry.doc_type,
-            body: entry.body,
-        };
-        if (entry.tenant_id != null) payload.tenant_id = entry.tenant_id;
-        if (entry.ifVersion !== undefined) payload.ifVersion = entry.ifVersion;
-        if (entry.base !== undefined) payload.base = entry.base;
+        const isDelete = entry.op === 'delete';
+        const docUrl = `${this.url}/${entry.db_id}/${encodeURIComponent(entry.doc_id)}`;
 
         let res;
         try {
-            res = await window.Auth.fetchWithAuth(url, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-            });
+            if (isDelete) {
+                // Server tombstone: DELETE /:db/:id?ifVersion=N (the LWW guard
+                // is a query param, and 400s if absent). A soft-delete always
+                // has a base row so ifVersion is set; if it somehow isn't, the
+                // doc never existed remotely — drop the entry.
+                if (entry.ifVersion === undefined || entry.ifVersion === null) {
+                    await DB.outboxDrop(entry.id);
+                    return true;
+                }
+                res = await window.Auth.fetchWithAuth(
+                    `${docUrl}?ifVersion=${entry.ifVersion}`,
+                    { method: 'DELETE' },
+                );
+            } else {
+                const payload = {
+                    doc_type: entry.doc_type,
+                    body: entry.body,
+                };
+                if (entry.tenant_id != null) payload.tenant_id = entry.tenant_id;
+                if (entry.ifVersion !== undefined) payload.ifVersion = entry.ifVersion;
+                if (entry.base !== undefined) payload.base = entry.base;
+                res = await window.Auth.fetchWithAuth(docUrl, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+            }
         } catch (e) {
             // Transport/signing failure (signer timeout, network down). NOT a
             // poison entry — never count it toward OUTBOX_MAX_ATTEMPTS, or an
             // outage silently DROPS queued writes the banner promised to keep.
-            // Requeue untouched; the app surfaces the offline banner and this
-            // drain loop keeps probing at OFFLINE_RETRY_MS.
-            console.debug('[Sync] PUT transport failed', e.message);
+            console.debug('[Sync] mutation transport failed', e.message);
             await DB.db.outbox.update(entry.id, { status: 'pending' });
             window.dispatchEvent(new CustomEvent('db-sync-offline', {
                 detail: { error: e },
@@ -504,13 +598,18 @@ window.Sync = {
         }
 
         if (res.ok) {
-            // A signed PUT reached the server — signing works; clear offline UI.
+            // A signed mutation reached the server — signing works; clear offline UI.
             window.dispatchEvent(new CustomEvent('db-sync-online'));
+            if (isDelete) {
+                // 204, no body. The local tombstone already sits at
+                // ifVersion+1 = the server's new version, so just clear pending
+                // (outboxAck keeps the row version when none is supplied).
+                await DB.outboxAck(entry.id, { version: undefined, updated_at: undefined });
+                return true;
+            }
             const json = await res.json().catch(() => ({}));
             if (json.merged && json.doc) {
-                // Server performed a 3-way merge; the stored body differs from
-                // what we sent. Adopt the authoritative doc (reuse the row-replace
-                // path) and notify the app to refresh its view.
+                // Server performed a 3-way merge; adopt the authoritative doc.
                 await DB.outboxConflict(entry.id, json.doc);
                 window.dispatchEvent(new CustomEvent('db-sync-merged', {
                     detail: { doc_id: entry.doc_id, doc: json.doc },
@@ -523,9 +622,16 @@ window.Sync = {
             }
             return true;
         }
+        if (isDelete && res.status === 404) {
+            // Already gone server-side — local tombstone stands; drop the entry.
+            await DB.outboxDrop(entry.id);
+            return true;
+        }
         if (res.status === 409) {
             const conflict = await res.json().catch(() => ({}));
             if (conflict && conflict.current) {
+                // Server wins (LWW): a delete conflict means the doc was edited
+                // after our base, so adopting `current` correctly un-deletes it.
                 await DB.outboxConflict(entry.id, conflict.current);
                 window.dispatchEvent(new CustomEvent('db-sync-conflict', {
                     detail: { doc_id: entry.doc_id, current: conflict.current },
@@ -540,9 +646,8 @@ window.Sync = {
             return false;
         }
         if (res.status === 401) {
-            // Auth window slid out from under us, or signer rejected. The
-            // next attempt will sign a fresh envelope; no point burning
-            // through retries fast.
+            // Auth window slid out from under us, or signer rejected. The next
+            // attempt signs a fresh envelope; no point burning retries fast.
             this._setStatus('error');
             await DB.db.outbox.update(entry.id, {
                 status: 'pending',
@@ -552,15 +657,15 @@ window.Sync = {
         }
         if (res.status === 403) {
             // Tenant membership rejected — permanent for this entry.
-            console.error('[Sync] PUT 403 forbidden, dropping entry', entry);
-            await DB.db.outbox.delete(entry.id);
+            console.error('[Sync] mutation 403 forbidden, dropping entry', entry);
+            await DB.outboxDrop(entry.id);
             window.dispatchEvent(new CustomEvent('db-sync-error', {
                 detail: { code: 'forbidden', doc_id: entry.doc_id },
             }));
             return true;
         }
         // 5xx / unknown — requeue.
-        console.warn('[Sync] PUT', res.status, 'for', entry.doc_id);
+        console.warn('[Sync]', isDelete ? 'DELETE' : 'PUT', res.status, 'for', entry.doc_id);
         await DB.db.outbox.update(entry.id, {
             status: 'pending',
             attempts: (entry.attempts || 0) + 1,
