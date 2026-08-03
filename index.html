@@ -28,11 +28,11 @@
     <link rel="stylesheet" href="css/styles.css?v=20260703a">
     <script src="https://cdn.jsdelivr.net/npm/dexie@4.0.10/dist/dexie.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <script>window.ROADY_BUILD = '20260704u'; // bump together with the ?v= busters below</script>
+    <script>window.ROADY_BUILD = '20260802a'; // bump together with the ?v= busters below</script>
     <script src="js/dlog.js?v=20260704e"></script>
     <script src="js/auth.js?v=20260704d"></script>
-    <script src="js/sync.js?v=20260704j"></script>
-    <script src="js/db.js?v=20260704j"></script>
+    <script src="js/sync.js?v=20260802a"></script>
+    <script src="js/db.js?v=20260802a"></script>
     <script src="js/tenant-manager.js?v=20260704m"></script>
     <script src="js/app.js?v=20260704p"></script>
 
@@ -1583,15 +1583,16 @@
         </div>
     </div>
     <script type="module">
-        import { NostrAuth, NostrLoginUI, encodeNpub, nuiAvatarHtml, nuiDisplayName, setProfileOverride } from './js/nostr-universal.js?v=20260704p';
+        import { NostrAuth, NostrLoginUI, encodeNpub, nuiAvatarHtml, nuiDisplayName, setProfileOverride } from './js/nostr-universal.js?v=20260802a';
 
         const APP_NAME = 'roady';
-        const RELAYS   = ['wss://relay.nsec.app', 'wss://relay.damus.io', 'wss://nos.lol'];
-        // Read-friendly relays for profile (kind:0) lookups. purplepag.es indexes
-        // profile metadata specifically; damus/primal/nos.lol have broad coverage.
-        // Kept separate from the signer relays above — relay.nsec.app is a signer
-        // relay, not a good profile source.
-        const PROFILE_RELAYS = ['wss://purplepag.es', 'wss://relay.damus.io', 'wss://relay.primal.net', 'wss://nos.lol'];
+        // Signer transport for NIP-46 and profile reads. relay.argw.com is the
+        // only relay these apps use — a third-party signer relay is a single
+        // point of failure for EVERY authenticated request (relay.nsec.app
+        // returned 502 on 2026-08-02 and the sibling app stalled at boot with
+        // "Signer did not respond to sign_event").
+        const RELAYS   = ['wss://relay.argw.com'];
+        const PROFILE_RELAYS = ['wss://relay.argw.com'];
 
         const auth = new NostrAuth({
             relays:         RELAYS,

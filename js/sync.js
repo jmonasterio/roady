@@ -544,10 +544,15 @@ window.Sync = {
 
     async _drainEntry(entry) {
         if ((entry.attempts || 0) >= this.OUTBOX_MAX_ATTEMPTS) {
-            console.error('[Sync] outbox entry exceeded retry limit; dropping', entry);
-            await DB.outboxDrop(entry.id);
+            // NEVER delete an unacked entry — it is the ONLY copy of that
+            // mutation, so dropping it destroys user data with no way back.
+            // Park it as 'failed': outboxNext() drains only 'pending', so the
+            // retry churn stops while the write stays recoverable via
+            // DB.outboxRetryFailed().
+            console.error('[Sync] outbox entry exceeded retry limit; parking as failed', entry);
+            await DB.db.outbox.update(entry.id, { status: 'failed' });
             window.dispatchEvent(new CustomEvent('db-sync-error', {
-                detail: { code: 'outbox_dropped', doc_id: entry.doc_id },
+                detail: { code: 'outbox_failed', doc_id: entry.doc_id },
             }));
             return true;
         }
@@ -629,12 +634,23 @@ window.Sync = {
         }
         if (res.status === 409) {
             const conflict = await res.json().catch(() => ({}));
-            if (conflict && conflict.current) {
+            const current = conflict && conflict.current;
+            // `version: 0` is mycouch's "no such document" payload (cf-d1
+            // `empty_doc`: null body, deleted:true). Adopting it would replace
+            // a real local row with a tombstone — and when this device holds
+            // the only copy, destroy it. The guard can never match either, so
+            // drop the guard and let the write insert.
+            if (current && current.version === 0) {
+                console.warn('[Sync] 409 "no such doc" for', entry.doc_id, '— retrying as a blind write');
+                await DB.outboxRequeueBlind(entry.id);
+                return false;
+            }
+            if (current) {
                 // Server wins (LWW): a delete conflict means the doc was edited
                 // after our base, so adopting `current` correctly un-deletes it.
-                await DB.outboxConflict(entry.id, conflict.current);
+                await DB.outboxConflict(entry.id, current);
                 window.dispatchEvent(new CustomEvent('db-sync-conflict', {
-                    detail: { doc_id: entry.doc_id, current: conflict.current },
+                    detail: { doc_id: entry.doc_id, current },
                 }));
                 return true;
             }
@@ -656,13 +672,21 @@ window.Sync = {
             return false;
         }
         if (res.status === 403) {
-            // Tenant membership rejected — permanent for this entry.
-            console.error('[Sync] mutation 403 forbidden, dropping entry', entry);
-            await DB.outboxDrop(entry.id);
+            // A 403 on a doc's FIRST write is usually a transient membership
+            // race (the tenant_members row isn't visible to this request yet),
+            // not a permanent rejection. Dropping the entry here silently
+            // destroyed user data in a sibling app — a whole garage of
+            // vehicles was written locally, 403'd once, discarded, and never
+            // retried. Retry bounded; max-attempts parks rather than deletes.
+            console.warn('[Sync] mutation 403 forbidden for', entry.doc_id, '— will retry');
+            await DB.db.outbox.update(entry.id, {
+                status: 'pending',
+                attempts: (entry.attempts || 0) + 1,
+            });
             window.dispatchEvent(new CustomEvent('db-sync-error', {
                 detail: { code: 'forbidden', doc_id: entry.doc_id },
             }));
-            return true;
+            return false;
         }
         // 5xx / unknown — requeue.
         console.warn('[Sync]', isDelete ? 'DELETE' : 'PUT', res.status, 'for', entry.doc_id);

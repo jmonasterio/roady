@@ -292,6 +292,32 @@ const DB = {
             .modify({ status: 'pending' });
     },
 
+    // Flip parked ('failed') entries back to 'pending'. An entry only reaches
+    // 'failed' after exhausting retries, and it is the ONLY copy of that
+    // mutation, so it is never discarded automatically — recovery is explicit.
+    async outboxRetryFailed() {
+        const n = await this.db.outbox
+            .where('status').equals('failed')
+            .modify({ status: 'pending', attempts: 0 });
+        return n || 0;
+    },
+
+    // Re-queue an entry as a BLIND write (guard removed). Used when the server
+    // answers a guarded write with its "no such document" conflict payload
+    // (version 0): the guard can never match, so retrying unchanged loops
+    // forever, and adopting that empty doc would wipe the local row.
+    async outboxRequeueBlind(id) {
+        await this.db.transaction('rw', this.db.outbox, async () => {
+            const e = await this.db.outbox.get(id);
+            if (!e) return;
+            delete e.ifVersion;
+            delete e.base;
+            e.status = 'pending';
+            e.attempts = (e.attempts || 0) + 1;
+            await this.db.outbox.put(e);
+        });
+    },
+
     /**
      * Drop an outbox entry the server permanently rejected (max attempts, 403,
      * or a delete the server reports as already gone) WITHOUT stranding the

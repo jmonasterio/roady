@@ -1996,7 +1996,13 @@ class Nip46Signer extends BaseSigner {
  */
 class NostrAuth {
   constructor(options = {}) {
-    this.relays = options.relays || ['wss://relay.nsec.app', 'wss://relay.damus.io', 'wss://nos.lol'];
+    // Default relay set. Deliberately ONE relay we own: a third-party signer
+    // relay is a single point of failure for every NIP-46 sign_event, and an
+    // app that forgets to pass `relays` silently inherits that dependency.
+    // relay.nsec.app returned 502 on 2026-08-02 and a consumer app stalled at
+    // boot with "Signer did not respond to sign_event" — the app had never
+    // set `relays`, so it had no idea it depended on someone else's uptime.
+    this.relays = options.relays || ['wss://relay.argw.com'];
     this.timeout = options.timeout || 60000;
     this.allowLocalDev = options.allowLocalDev || false;
     this.allowGuestMode = options.allowGuestMode || false;
