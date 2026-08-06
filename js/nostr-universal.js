@@ -957,17 +957,20 @@ function _safeCloseWs(ws) {
  * relay is unreachable, re-dialing it on each request produces a storm of
  * `WebSocket … failed` errors — each a fresh socket that waits up to
  * `connectionTimeout`. To honor the "one persistent connection" intent, a relay
- * whose *dial* fails is recorded in `failedRelays` with a timestamp; subsequent
- * `connect` calls fast-fail (throw an error tagged `{ cooldown: true }`, so
- * `tryConnect` returns null) for `retryBackoff` ms instead of opening a new
- * socket. A successful open clears the entry. A clean close of a
- * previously-open socket does NOT record a failure — transient drops are free
- * to reconnect immediately.
+ * whose *dial* fails is recorded in `failedRelays` as `{failedAt, attempts}`;
+ * subsequent `connect` calls fast-fail (throw an error tagged
+ * `{ cooldown: true }`, so `tryConnect` returns null) for
+ * `retryBackoff * 2^(attempts-1)` ms, capped at `maxRetryBackoff` — each
+ * consecutive failed dial doubles the wait, so a relay that stays dead decays
+ * to one dial per `maxRetryBackoff` instead of hammering forever. A successful
+ * open clears the entry. A clean close of a previously-open socket does NOT
+ * record a failure — transient drops are free to reconnect immediately.
  *
  * @param {object} [options]
  * @param {number} [options.connectionTimeout=20000] ms before a pending dial is abandoned
  * @param {number} [options.pingInterval=30000]      ms between keepalive REQ pings
- * @param {number} [options.retryBackoff=30000]      ms to skip re-dialing a relay after a failed dial
+ * @param {number} [options.retryBackoff=30000]      base ms to skip re-dialing a relay after a failed dial
+ * @param {number} [options.maxRetryBackoff=300000]  ceiling for the exponential re-dial backoff
  */
 class RelayPool {
   constructor(options = {}) {
@@ -975,23 +978,45 @@ class RelayPool {
     this.subscriptions = new Map(); // subId -> { filters, relays, callbacks }
     this.connectionTimeout = options.connectionTimeout || 20000; // 20 seconds
     this.pingInterval = options.pingInterval || 30000; // 30 seconds keepalive
-    // ms to skip re-dialing a relay after a failed dial (negative cache).
+    // Base ms to skip re-dialing a relay after a failed dial (negative cache);
+    // doubles per consecutive failure up to maxRetryBackoff.
     this.retryBackoff = options.retryBackoff || 30000;
-    this.failedRelays = new Map(); // url -> failedAt(ms) of last failed dial
+    this.maxRetryBackoff = options.maxRetryBackoff || 300000;
+    this.failedRelays = new Map(); // url -> { failedAt(ms), attempts }
+  }
+
+  /**
+   * Record a failed dial for the exponential negative cache. Consecutive
+   * failures increment `attempts` (a successful open resets by deleting the
+   * entry in onopen).
+   * @private
+   */
+  _recordDialFailure(url) {
+    const prev = this.failedRelays.get(url);
+    this.failedRelays.set(url, {
+      failedAt: Date.now(),
+      attempts: (prev ? prev.attempts : 0) + 1
+    });
   }
 
   async connect(url) {
     // Negative cache (NIP-01: one socket per relay, reuse it). Skip a relay
-    // whose dial failed within the last `retryBackoff` ms instead of opening a
+    // whose dial failed within its current backoff window instead of opening a
     // brand-new socket on every request — see class doc.
-    const failedAt = this.failedRelays.get(url);
-    if (failedAt !== undefined) {
-      if (Date.now() - failedAt < this.retryBackoff) {
+    const failed = this.failedRelays.get(url);
+    if (failed !== undefined) {
+      const wait = Math.min(
+        this.retryBackoff * 2 ** (failed.attempts - 1),
+        this.maxRetryBackoff
+      );
+      if (Date.now() - failed.failedAt < wait) {
         const err = new Error(`Relay cooling down: ${url}`);
         err.cooldown = true;
         throw err;
       }
-      this.failedRelays.delete(url);
+      // Entry intentionally kept: if this retry dial fails too,
+      // _recordDialFailure increments `attempts` (exponential backoff);
+      // a successful open deletes it.
     }
     if (this.relays.has(url)) {
       const relay = this.relays.get(url);
@@ -1024,7 +1049,7 @@ class RelayPool {
       } catch (err) {
         relay.status = 'failed';
         this.relays.delete(url);
-        this.failedRelays.set(url, Date.now());
+        this._recordDialFailure(url);
         reject(err);
         return;
       }
@@ -1033,7 +1058,7 @@ class RelayPool {
         relay.status = 'failed';
         _safeCloseWs(relay.ws);
         this.relays.delete(url);
-        this.failedRelays.set(url, Date.now());
+        this._recordDialFailure(url);
         const err = new Error(`Connection timeout: ${url}`);
         reject(err);
         // Drain queued waiters too — _safeCloseWs detaches the ws handlers,
@@ -1084,7 +1109,7 @@ class RelayPool {
         if (relay.pingTimer) clearInterval(relay.pingTimer);
         relay.status = 'failed';
         this.relays.delete(url);
-        if (!opened) this.failedRelays.set(url, Date.now());
+        if (!opened) this._recordDialFailure(url);
         reject(new Error(`Connection failed: ${url}`));
         relay.queue.forEach(q => q.reject(err));
         relay.queue = [];
@@ -1439,6 +1464,15 @@ class LocalSigner extends BaseSigner {
 const NIP46_DEFAULT_PERMS =
   'sign_event,sign_event:27235,get_public_key,nip04_encrypt,nip04_decrypt,nip44_encrypt,nip44_decrypt';
 
+/// Per-attempt timeout for the post-connect `get_public_key` probe.
+///
+/// Short, because its job is to out-wait a signer whose subscription came up
+/// after its ack, not to wait for a human: the overall budget still belongs to
+/// the caller's timeout, and this only decides how often we re-ask inside it.
+/// 5s gives a signer that is genuinely thinking time to answer, while a lost
+/// request costs 5s instead of the full 60.
+const NIP46_IDENTITY_PROBE_MS = 5000;
+
 class Nip46Signer extends BaseSigner {
   constructor({ relays, timeout = 60000, localPrivateKey = null, remotePubkey = null }) {
     super();
@@ -1465,11 +1499,28 @@ class Nip46Signer extends BaseSigner {
   }
 
   /**
-   * Create a signer from saved session data
+   * Create a signer from saved session data.
+   * `options.extraRelays` (the app's configured relays) are combined with the
+   * saved list according to `options.relayPolicy`:
+   *   'prefer' (default) — extras are merged IN FRONT of the saved list: a
+   *     session saved with only the signer's advertised relays (e.g. an
+   *     nsec.app bunker's damus/nsec.app defaults) becomes unusable when those
+   *     are unreachable from the current network, even though the signer may
+   *     also listen on the app's own relay. Publishing/subscribing on the union
+   *     is protocol-safe — relays the signer ignores just never answer.
+   *   'only' — the saved relays are dropped entirely and only the app's relays
+   *     are used, for apps that refuse to depend on a third party's uptime.
    */
   static restore(savedData, options = {}) {
+    const extra = options.extraRelays || [];
+    // 'only' with no extras would leave the signer with an EMPTY relay list,
+    // which makes it permanently unusable — strictly worse than a stale relay
+    // list. So an empty `extra` always falls back to the saved relays.
+    const relays = options.relayPolicy === 'only' && extra.length > 0
+      ? [...new Set(extra)]
+      : [...new Set([...extra, ...savedData.relays])];
     const signer = new Nip46Signer({
-      relays: savedData.relays,
+      relays,
       timeout: options.timeout || 60000,
       localPrivateKey: hexToBytes(savedData.localPrivateKey),
       remotePubkey: savedData.remotePubkey
@@ -1485,10 +1536,11 @@ class Nip46Signer extends BaseSigner {
       throw new Error('Saved session is incomplete. Please connect again.');
     }
 
-    // Don't block startup on the relay handshake — the pubkey is already known
-    // from the saved session. _startListening() subscribes and connects to the
-    // relays lazily in the background; the signer proves itself on first sign.
-    this._startListening();
+    // Fully lazy: do NOT touch the network here. The pubkey is already known
+    // from the saved session, and the response subscription is opened by
+    // _rpc() on the first actual signer operation. Dialing here meant every
+    // page load of every consuming app pinged the saved signer relays even if
+    // the user never signed anything that session.
 
     // Mark as connected optimistically. Web-based signers (nsec.app) run
     // in service workers that may take seconds to wake up via push notification.
@@ -1555,7 +1607,12 @@ class Nip46Signer extends BaseSigner {
   }
 
   /**
-   * Create a signer from a bunker:// URI
+   * Create a signer from a bunker:// URI.
+   * `options.relayPolicy` selects how `options.extraRelays` (the app's own
+   * relays) combine with the relays advertised in the URI:
+   *   'prefer' (default) — union, bunker-advertised relays first.
+   *   'only' — app relays exclusively; the bunker's advertised relays are
+   *     ignored, for apps that refuse to depend on a third party's uptime.
    */
   static fromBunkerURI(uri, options = {}) {
     const parsed = Nip46Signer.parseURI(uri);
@@ -1568,8 +1625,18 @@ class Nip46Signer extends BaseSigner {
       throw new Error('No relay specified in bunker URI');
     }
 
+    const extra = options.extraRelays || [];
+    // 'only' with no extras would leave the signer with an EMPTY relay list,
+    // which makes it permanently unusable — strictly worse than a stale relay
+    // list. So an empty `extra` always falls back to the bunker's relays.
+    const relays = options.relayPolicy === 'only' && extra.length > 0
+      ? [...new Set(extra)]
+      // Bunker-advertised relays first (that's where the signer promises to
+      // listen); app-configured extras appended as additional candidates.
+      : [...new Set([...parsed.relays, ...extra])];
+
     const signer = new Nip46Signer({
-      relays: parsed.relays,
+      relays,
       timeout: options.timeout || 60000,
       localPrivateKey: options.localPrivateKey || null
     });
@@ -1682,6 +1749,10 @@ class Nip46Signer extends BaseSigner {
                 hexToBytes(event.pubkey)
               );
               const msg = JSON.parse(decrypted);
+              console.info(
+                `[nostr] nip46 connect-wait <- from ${event.pubkey.slice(0, 12)}\u2026 ` +
+                `method=${msg.method || '-'} result=${String(msg.result ?? '-').slice(0, 24)}`
+              );
 
               // Handle connect request from signer (nostrconnect:// flow)
               // The signer sends back a response with the secret we provided
@@ -1695,6 +1766,13 @@ class Nip46Signer extends BaseSigner {
                 if (this.connectSecret) {
                   const returnedSecret = msg.params && msg.params[1]; // [pubkey, secret?, perms?]
                   if (returnedSecret !== this.connectSecret) {
+                    // Staying silent here is indistinguishable from the signer
+                    // never answering — but this branch only fires for an ack
+                    // that DID arrive and was thrown away.
+                    console.warn(
+                      '[nostr] nip46 connect IGNORED: secret mismatch ' +
+                      `(got ${String(returnedSecret).slice(0, 8)}\u2026)`
+                    );
                     return;
                   }
                 }
@@ -1738,7 +1816,12 @@ class Nip46Signer extends BaseSigner {
                 else res(msg.result);
               }
             } catch (e) {
-              // Ignore decryption/parse errors
+              // A frame we could not decrypt or parse. Historically silent,
+              // which made a botched ack look identical to no ack at all.
+              console.warn(
+                `[nostr] nip46 connect-wait undecryptable frame from ` +
+                `${event.pubkey.slice(0, 12)}\u2026: ${e.message}`
+              );
             }
           },
           onEose: () => {},
@@ -1821,7 +1904,15 @@ class Nip46Signer extends BaseSigner {
   }
 
   _startListening() {
-    if (this.subscription) this.subscription.close();
+    // Deliberately NOT `close()` first. Kind 24133 is ephemeral - the relay
+    // persists nothing - so a signer response that lands while no subscription
+    // is open is gone for good, and the caller then burns its whole timeout
+    // waiting for an answer that already came and went. Closing before
+    // resubscribing opened exactly that gap on the nostrconnect ack path,
+    // where the signer's next reply follows within milliseconds. Register the
+    // replacement first, then retire the old one; a brief overlap only risks a
+    // duplicate, which `pendingRequests` already dedupes by id.
+    const previous = this.subscription;
 
     const localPubkeyHex = bytesToHex(this.localPublicKey);
 
@@ -1830,7 +1921,17 @@ class Nip46Signer extends BaseSigner {
       [{ kinds: [24133], '#p': [localPubkeyHex] }],
       {
         onEvent: async (event) => {
-          if (event.pubkey !== this.remotePubkey) return;
+          if (event.pubkey !== this.remotePubkey) {
+            // Not our signer. Logged rather than dropped in silence: an
+            // unexpected author here is the whole difference between "the
+            // signer never answered" and "something answered and we threw it
+            // away", and those have opposite fixes.
+            console.info(
+              `[nostr] nip46 <- ignored event from ${event.pubkey.slice(0, 12)}\u2026 ` +
+              `(expected ${String(this.remotePubkey).slice(0, 12)}\u2026)`
+            );
+            return;
+          }
 
           try {
             const decrypted = await nip04or44Decrypt(
@@ -1839,6 +1940,10 @@ class Nip46Signer extends BaseSigner {
               hexToBytes(event.pubkey)
             );
             const msg = JSON.parse(decrypted);
+            console.info(
+              `[nostr] nip46 <- id=${String(msg.id).slice(0, 8)} ` +
+              (msg.error ? `error=${msg.error}` : `result=${String(msg.result).slice(0, 24)}`)
+            );
 
             if (msg.id && this.pendingRequests.has(msg.id)) {
               const { resolve, reject } = this.pendingRequests.get(msg.id);
@@ -1876,7 +1981,12 @@ class Nip46Signer extends BaseSigner {
               }
             }
           } catch (e) {
-            // Ignore decryption errors
+            // Same reasoning as the connect path: an undecryptable answer is
+            // a real answer we failed to read, not silence from the signer.
+            console.warn(
+              `[nostr] nip46 undecryptable frame from ` +
+              `${event.pubkey.slice(0, 12)}\u2026: ${e.message}`
+            );
           }
         },
         onError: (err) => {
@@ -1885,6 +1995,7 @@ class Nip46Signer extends BaseSigner {
         }
       }
     );
+    if (previous) previous.close();
   }
 
   async _rpc(method, params = [], timeoutMs) {
@@ -1896,8 +2007,16 @@ class Nip46Signer extends BaseSigner {
       throw new NostrError('No remote pubkey set', 'NO_REMOTE_PUBKEY');
     }
 
+    // Lazily open the response subscription (restored sessions defer all
+    // network I/O until the first real operation). Safe ordering: subscribe()
+    // registers the sub synchronously, and connect()'s onopen replays subs
+    // before draining queued publish waiters, so the REQ hits each socket
+    // before our EVENT does.
+    if (!this.subscription) this._startListening();
+
     const timeout = timeoutMs || this.timeout;
     const id = crypto.randomUUID();
+    console.info(`[nostr] nip46 -> ${method} id=${id.slice(0, 8)}`);
 
     // Create promise and register pending request BEFORE publishing
     // to avoid race condition where response arrives before we're ready
@@ -1933,14 +2052,27 @@ class Nip46Signer extends BaseSigner {
       this.localPrivateKey
     );
 
-    // Fire and forget — response comes via subscription, not publish confirmation
-    this.pool.publish(this.relays, event).catch(() => {});
+    // Response comes via subscription, not publish confirmation — but if the
+    // request reached ZERO relays (every dial/send failed; `unconfirmed` means
+    // at least one relay got the event), the signer can never see it. Fail the
+    // pending request now instead of letting the caller hang for the full
+    // response timeout (observed: dead signer relays froze consumer apps for
+    // 60s per sign/encrypt/decrypt call).
+    this.pool.publish(this.relays, event).then((res) => {
+      if (res.ok || res.unconfirmed) return;
+      const pending = this.pendingRequests.get(id);
+      if (!pending) return;
+      this.pendingRequests.delete(id);
+      pending.reject(new RelayError(
+        `Could not reach any signer relay (${this.relays.join(', ')}); '${method}' request not sent`
+      ));
+    }).catch(() => {});
 
     return responsePromise;
   }
 
-  async getPublicKey() {
-    return await this._rpc('get_public_key');
+  async getPublicKey(timeoutMs) {
+    return await this._rpc('get_public_key', [], timeoutMs);
   }
 
   async sign(event) {
@@ -2003,6 +2135,16 @@ class NostrAuth {
     // boot with "Signer did not respond to sign_event" — the app had never
     // set `relays`, so it had no idea it depended on someone else's uptime.
     this.relays = options.relays || ['wss://relay.argw.com'];
+    // How `this.relays` combines with the relays a NIP-46 signer advertises:
+    //   'prefer' (default) — union, with the app's relays tried first.
+    //   'only'             — the app's relays are authoritative; signer-advertised
+    //                        and saved relays are ignored for NIP-46 transport.
+    // 'only' exists because a third-party signer relay is a single point of
+    // failure for every sign_event: an app that owns its relay should be able
+    // to refuse to depend on someone else's uptime. On 2026-08-04 the app
+    // `cars` (relay: wss://relay.argw.com) had both signer-advertised relays
+    // return 502/503 and all signing died, even though its own relay was up.
+    this.relayPolicy = options.relayPolicy || 'prefer';
     this.timeout = options.timeout || 60000;
     this.allowLocalDev = options.allowLocalDev || false;
     this.allowGuestMode = options.allowGuestMode || false;
@@ -2052,6 +2194,16 @@ class NostrAuth {
 
     const uri = signer.getConnectURI(metadata);
 
+    // A nostrconnect session's FIRST frame travels signer -> client, addressed
+    // to this ephemeral key. Nobody watching the relay can know that key in
+    // advance, so that frame is unobservable and "the signer never acked"
+    // looks exactly like "the signer acked and we dropped it". Publishing the
+    // key (public half only - never the secret, which is what authenticates
+    // the ack) makes the whole handshake auditable from the outside.
+    console.info(
+      `[nostr] NIP-46 session key ${bytesToHex(signer.localPublicKey)} on ${signer.relays.join(', ')}`
+    );
+
     return { signer, uri };
   }
 
@@ -2067,7 +2219,38 @@ class NostrAuth {
 
     onProgress('connected', 'Signer connected! Getting your identity...');
 
-    const pubkey = await signer.getPublicKey();
+    // A signer PUBLISHES its connect ack before it necessarily SUBSCRIBES for
+    // our requests - publishing needs no subscription, receiving does. Kind
+    // 24133 is ephemeral, so a request sent into that window is not queued
+    // anywhere by the relay: it is discarded, and a single get_public_key then
+    // burns the entire timeout waiting for a reply that can never come.
+    // Observed with Amber on 2026-08-04: ack arrived and was secret-validated,
+    // the immediate get_public_key was never answered, and the identical call
+    // succeeded once the connection had settled.
+    //
+    // So probe instead of asking once. ONLY get_public_key is retried: it is a
+    // pure read, so a duplicate costs nothing. Never do this for sign_event -
+    // resending that can make a signer prompt twice or sign twice.
+    const deadline = Date.now() + (timeoutMs || this.timeout);
+    let pubkey = null;
+    for (let attempt = 1; pubkey === null; attempt++) {
+      const left = deadline - Date.now();
+      if (left <= 0) break;
+      try {
+        pubkey = await signer.getPublicKey(Math.min(NIP46_IDENTITY_PROBE_MS, left));
+      } catch (e) {
+        // Only silence is retryable. An explicit refusal is the signer's
+        // answer, and asking again would just spam its approval UI.
+        if (!(e instanceof TimeoutError)) throw e;
+        onProgress('connected', `Signer connected. Waiting for it to answer (${attempt})\u2026`);
+      }
+    }
+    if (pubkey === null) {
+      throw new TimeoutError(
+        'Signer connected but never returned your identity. Open your signer ' +
+        'app and approve the pending request, then try again.'
+      );
+    }
 
     onProgress('complete', 'Login successful!');
     this._addAccount(pubkey, signer, 'nip46', { remotePubkey });
@@ -2094,9 +2277,20 @@ class NostrAuth {
       const signer = Nip46Signer.fromBunkerURI(bunkerUri, {
         timeout: timeoutMs || this.timeout,
         localPrivateKey: lk,
-        perms: perms ?? null
+        perms: perms ?? null,
+        extraRelays: this.relays,
+        relayPolicy: this.relayPolicy
       });
       activeSigner = signer;
+      // Same reasoning as createNip46Session's log, for the other flow. Here
+      // the SIGNER dictates the relays (they come out of the bunker URI), so
+      // this is the only place the app can observe where it is expected to
+      // listen - and a bunker whose advertised relay nobody is subscribed on
+      // fails identically to a signer that is simply offline.
+      console.info(
+        `[nostr] NIP-46 bunker ${signer.remotePubkey.slice(0, 12)}\u2026 ` +
+        `session key ${bytesToHex(signer.localPublicKey)} on ${signer.relays.join(', ')}`
+      );
       if (onAuthUrl) signer.onAuthUrl = onAuthUrl;
       await signer.connectToBunker(timeoutMs || this.timeout);
       const pubkey = await signer.getPublicKey();
@@ -2270,7 +2464,19 @@ class NostrAuth {
 
   getActiveSigner() {
     if (!this.activePubkey) return null;
-    return this.accounts.get(this.activePubkey)?.signer;
+    const account = this.accounts.get(this.activePubkey);
+    if (!account) return null;
+    // Lazy NIP-07 recovery: extensions (Alby MV3 especially) inject
+    // `window.nostr` asynchronously, often AFTER restoreSession() ran. When
+    // that race was lost, `signer` stays null and every app-level retry loop
+    // fails with "Session expired" forever even though the extension is now
+    // present. Self-heal here: if the extension has appeared, re-create the
+    // signer on demand. A mismatched extension account is caught server-side
+    // (the signed event carries the extension's pubkey, not ours).
+    if (!account.signer && account.type === 'nip07' && this.hasNip07()) {
+      account.signer = new Nip07Signer();
+    }
+    return account.signer;
   }
 
   listAccounts() {
@@ -2434,9 +2640,19 @@ class NostrAuth {
     if (!account) return null;
 
     if (account.type === 'nip07') {
+      // Extensions inject `window.nostr` ASYNCHRONOUSLY — Alby's MV3 service
+      // worker routinely lands after page scripts run. Poll briefly before
+      // concluding anything about the extension's presence.
+      const injectDeadline = Date.now() + Math.min(timeoutMs, 5000);
+      while (!this.hasNip07() && Date.now() < injectDeadline) {
+        await new Promise(r => setTimeout(r, 100));
+      }
       if (!this.hasNip07()) {
-        // Extension no longer available
-        this.logout(this.activePubkey);
+        // Still absent. Do NOT logout: a slow-waking or disabled-for-now
+        // extension is indistinguishable from a removed one, and logging out
+        // destroys the session state a later reload could restore (the NIP-46
+        // path already keeps its saved data for retry — same policy here).
+        // getActiveSigner() self-heals if the extension appears later.
         return null;
       }
 
@@ -2449,20 +2665,31 @@ class NostrAuth {
           account.signer = signer;
           return pubkey;
         } else {
-          // Different pubkey - extension changed
+          // Different pubkey — the user switched accounts inside the
+          // extension. This is the ONLY case where logging out is correct.
           this.logout(this.activePubkey);
           return null;
         }
       } catch (e) {
-        this.logout(this.activePubkey);
+        // getPublicKey rejected: extension locked, user dismissed the unlock
+        // prompt, or the service worker is still waking. Transient — keep the
+        // account for retry instead of destroying the session.
+        console.warn('NIP-07 restore failed (extension locked/waking?), keeping session:', e?.message || e);
         return null;
       }
     }
 
     if (account.type === 'nip46' && account.savedNip46) {
       try {
-        // Recreate signer from saved credentials
-        const signer = Nip46Signer.restore(account.savedNip46);
+        // Recreate signer from saved credentials. Union in the app's own
+        // relays: sessions saved with only signer-advertised relays go dark
+        // when those are unreachable from this network (observed: nsec.app
+        // bunker session pinned to damus/nsec.app while the bunker also
+        // listened on the app's relay).
+        const signer = Nip46Signer.restore(account.savedNip46, {
+          extraRelays: this.relays,
+          relayPolicy: this.relayPolicy
+        });
 
         // Try to reconnect
         await signer.reconnect(timeoutMs);
