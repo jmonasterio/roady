@@ -28,16 +28,16 @@
 
     <!-- Stylesheets -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-    <link rel="stylesheet" href="css/styles.css?v=20260703a">
+    <link rel="stylesheet" href="css/styles.css?v=20260813c">
     <script src="https://cdn.jsdelivr.net/npm/dexie@4.0.10/dist/dexie.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <script>window.ROADY_BUILD = '20260802a'; // bump together with the ?v= busters below</script>
+    <script>window.ROADY_BUILD = '20260813c'; // bump together with the ?v= busters below</script>
     <script src="js/dlog.js?v=20260704e"></script>
-    <script src="js/auth.js?v=20260704d"></script>
+    <script src="js/auth.js?v=20260813a"></script>
     <script src="js/sync.js?v=20260802a"></script>
     <script src="js/db.js?v=20260802a"></script>
     <script src="js/tenant-manager.js?v=20260704m"></script>
-    <script src="js/app.js?v=20260704p"></script>
+    <script src="js/app.js?v=20260813a"></script>
 
 
     <!-- Service Worker Registration -->
@@ -73,8 +73,15 @@
 </head>
 
 <body>
-    <!-- Nostr Login Overlay -->
+    <!-- Nostr Login Overlay. Blocking (no close button) only for the very
+         first paint of a returning-session restore or an invite link with no
+         saved session; the boot script hides it immediately with a silently
+         minted guest key otherwise (see the module script at the bottom).
+         Reopened later — non-blocking — from Settings' "Sign in with Nostr"
+         via window.openNostrUpgrade(), which reveals #nostr-login-close. -->
     <div id="nostr-login-overlay" style="position:fixed;inset:0;z-index:9999;background:var(--pico-background-color,#11111b);display:flex;align-items:center;justify-content:center;padding:1rem;">
+        <button id="nostr-login-close" type="button" aria-label="Close"
+            style="display:none;position:absolute;top:1rem;right:1rem;background:none;border:none;font-size:1.5rem;line-height:1;color:var(--pico-muted-color,#888);cursor:pointer;">&#10005;</button>
         <div id="nostr-login-card" style="width:100%;max-width:420px;"></div>
     </div>
     <div x-data="roady" x-cloak>
@@ -177,7 +184,8 @@
                     </span>
                     <span x-html="nostrAvatarHtml"></span>
                     <span class="nav-user-details" x-text="nostrDisplayName" style="font-size:0.85rem;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" :title="nostrNpub"></span>
-                    <button class="secondary outline nav-user-details" style="padding:0.2rem 0.6rem;font-size:0.75rem;margin:0;" @click="window.Auth.logout();location.reload()">Sign out</button>
+                    <button x-show="!isGuestAccount" class="secondary outline nav-user-details" style="padding:0.2rem 0.6rem;font-size:0.75rem;margin:0;" @click="window.Auth.logout();location.reload()">Sign out</button>
+                    <button x-show="isGuestAccount" class="nav-signin-btn" style="padding:0.2rem 0.6rem;font-size:0.75rem;margin:0;" @click="window.openNostrUpgrade()"><span class="signin-full">Sign in with Nostr</span><span class="signin-short">Sign In</span></button>
                 </li>
             </ul>
         </nav>
@@ -1316,10 +1324,19 @@
                         <span x-html="nostrAvatarHtml"></span>
                         <div style="min-width: 0; flex: 1;">
                             <strong x-text="nostrDisplayName" style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></strong>
-                            <small class="text-muted" x-text="nostrNpub" style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></small>
+                            <small x-show="!isGuestAccount" class="text-muted" x-text="nostrNpub" style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></small>
+                            <small x-show="isGuestAccount" class="text-muted" style="display: block;">This device only &mdash; not backed up anywhere else yet.</small>
                         </div>
-                        <button class="outline secondary" style="margin: 0; white-space: nowrap;" @click="window.Auth.logout();location.reload()">Sign out</button>
+                        <button x-show="!isGuestAccount" class="outline secondary" style="margin: 0; white-space: nowrap;" @click="window.Auth.logout();location.reload()">Sign out</button>
+                        <button x-show="isGuestAccount" style="margin: 0; white-space: nowrap;" @click="window.openNostrUpgrade()">Sign in with Nostr</button>
                     </article>
+                    <p x-show="isGuestAccount" class="text-muted" style="font-size: 0.85rem; margin-top: -0.75rem;">
+                        You're using Roady on this device only, with no account. Everything you enter is
+                        saved here, but it won't follow you to another phone or browser, and there's
+                        nothing to recover if this device is lost. <strong>Sign in with Nostr</strong> to
+                        carry your band to another device or invite people to it &mdash; it keeps
+                        everything you've already added.
+                    </p>
 
                     <div style="margin-top: 2rem;">
                          <h4>Sync Settings</h4>
@@ -1482,31 +1499,42 @@
                 </button>
             </div>
 
-            <!-- Add-to-Home-Screen hint — only in a browser tab, never when
-                 already installed (standalone). Android/Chromium fires
-                 beforeinstallprompt and uses the native prompt; iOS Safari has
-                 no such API, so we show the manual Share -> Add to Home Screen. -->
-            <div x-show="showInstallHint && isAuthenticated" x-cloak role="dialog" aria-label="Add Roady to home screen"
-                style="position: fixed; bottom: 1rem; left: 1rem; right: 1rem; max-width: 400px; margin: 0 auto; background: var(--pico-form-element-background-color); border: 1px solid var(--pico-form-element-border-color); border-radius: var(--pico-border-radius); padding: 1rem; z-index: 1001; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
-                <div style="display: flex; align-items: flex-start; gap: 0.75rem;">
-                    <img src="/icons/icon-96x96.png" alt="" width="40" height="40" style="border-radius: 8px; flex-shrink: 0;" />
-                    <div style="flex: 1;">
-                        <strong style="display: block; margin-bottom: 0.25rem;">Add Roady to your home screen</strong>
-                        <p x-show="installPlatform === 'android'" style="margin: 0; font-size: 0.85rem; color: var(--pico-muted-color);">
-                            Install it as an app for full-screen, offline use.</p>
-                        <p x-show="installPlatform === 'ios'" style="margin: 0; font-size: 0.85rem; color: var(--pico-muted-color);">
-                            Tap the Share button
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="vertical-align: -2px;"><path d="M12 16V4"></path><path d="M8 8l4-4 4 4"></path><path d="M4 12v6a2 2 0 002 2h12a2 2 0 002-2v-6"></path></svg>
-                            in Safari's toolbar, then choose <strong>Add to Home Screen</strong>.</p>
-                    </div>
-                    <button @click="dismissInstallHint()" aria-label="Dismiss"
-                        style="margin: 0; padding: 0.25rem 0.5rem; font-size: 0.85rem; color: var(--pico-muted-color); border: none; background: transparent; cursor: pointer;">✕</button>
-                </div>
-                <div x-show="installPlatform === 'android'" style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
-                    <button @click="promptInstall()" style="margin: 0; flex: 1;">Add to Home Screen</button>
-                    <button @click="dismissInstallHint()" class="secondary outline" style="margin: 0;">Not now</button>
-                </div>
-            </div>
+            <!-- Add-to-Home-Screen prompt. A real <dialog>, matching the
+                 Configuration Error / Signing-access dialogs elsewhere in this
+                 file, not a corner toast easy to miss. Shown on every visit
+                 until "Don't ask again" is tapped (skipInstallHint() only
+                 hides it for this visit — most people won't install on the
+                 first one). Auto-suppressed once already installed
+                 (standalone) — see initInstallHint(). Android/Chromium fires
+                 beforeinstallprompt and gets a one-tap native install; iOS
+                 Safari has no such API, so it gets the manual Share -> Add to
+                 Home Screen walkthrough. Both paths spell out the exact name
+                 ("Roady") the installed icon will carry, since a home screen
+                 full of similarly generic web-app icons makes an unlabeled
+                 one impossible to find again. -->
+            <dialog :open="showInstallHint && isAuthenticated" aria-label="Add Roady to your home screen">
+                <article style="max-width: 26rem;">
+                    <header style="display: flex; align-items: center; gap: 0.75rem;">
+                        <img src="/icons/icon-96x96.png" alt="" width="40" height="40" style="border-radius: 8px; flex-shrink: 0;" />
+                        <strong>Add Roady to your home screen</strong>
+                    </header>
+                    <p x-show="installPlatform === 'android'">
+                        One tap installs it as its own app &mdash; full-screen, works offline, and
+                        appears on your home screen or app list as <strong>Roady</strong>.
+                    </p>
+                    <p x-show="installPlatform === 'ios'">
+                        Tap the Share button
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="vertical-align: -2px;"><path d="M12 16V4"></path><path d="M8 8l4-4 4 4"></path><path d="M4 12v6a2 2 0 002 2h12a2 2 0 002-2v-6"></path></svg>
+                        in Safari's toolbar, then choose <strong>Add to Home Screen</strong>. Look for
+                        <strong>Roady</strong> on your home screen afterward.
+                    </p>
+                    <footer style="display: flex; gap: 0.5rem; justify-content: flex-end; flex-wrap: wrap; margin: 0;">
+                        <button x-show="installPlatform === 'android'" @click="promptInstall()" style="margin: 0;">Add to Home Screen</button>
+                        <button @click="skipInstallHint()" class="secondary outline" style="margin: 0;">Not now</button>
+                        <button @click="dismissInstallHint()" class="secondary outline" style="margin: 0;">Don't ask again</button>
+                    </footer>
+                </article>
+            </dialog>
 
         </main>
 
@@ -1586,7 +1614,7 @@
         </div>
     </div>
     <script type="module">
-        import { NostrAuth, NostrLoginUI, encodeNpub, nuiAvatarHtml, nuiDisplayName, setProfileOverride } from './js/nostr-universal.js?v=20260802a';
+        import { NostrAuth, NostrLoginUI, encodeNpub, nuiAvatarHtml, nuiDisplayName, setProfileOverride } from './js/nostr-universal.js?v=20260813a';
 
         const APP_NAME = 'roady';
         // Signer transport for NIP-46 and profile reads. relay.argw.com is the
@@ -1615,12 +1643,15 @@
 
         let _sessionReady = false;
         const overlay = document.getElementById('nostr-login-overlay');
-
+        const overlayCloseBtn = document.getElementById('nostr-login-close');
+        overlayCloseBtn.addEventListener('click', () => { overlay.style.display = 'none'; });
         // Post-connect bootstrap — hides the overlay and signals app.init(),
         // which awaits the `nostr-connected` event. Shared by the login UI's
         // onConnected and the invite intro's "create key" path.
         async function proceedConnected(pubkey, profile) {
             overlay.style.display = 'none';
+            overlayCloseBtn.style.display = 'none';
+            const previousPubkey = window.Auth._cachedPubkey;
             window.Auth._cachedPubkey  = pubkey;
             window.Auth._cachedProfile = profile;
             if (!_sessionReady) {
@@ -1638,10 +1669,28 @@
                 window.Auth.setMycouchBaseUrl(mycouchBaseUrl);
                 // No token to warm under MNA1 — each request signs fresh.
                 window.dispatchEvent(new CustomEvent('nostr-connected', { detail: { pubkey, profile } }));
+            } else if (previousPubkey && previousPubkey !== pubkey) {
+                // Connected to a genuinely different identity mid-session (not
+                // the device key carried into a real signer, which keeps the
+                // same pubkey) — DB scoping and every loaded tenant are keyed
+                // off the old pubkey, so the only clean path is a fresh boot.
+                location.reload();
             } else {
                 window.dispatchEvent(new CustomEvent('nostr-profile-updated', { detail: { pubkey, profile } }));
             }
         }
+
+        // Re-open the login card without disturbing the current session —
+        // used by Settings' / the nav's "Sign in with Nostr" for a guest
+        // account. Picking "Move a key to this device" first (to carry the
+        // existing guest key into a real signer) keeps the same pubkey and
+        // upgrades in place; picking a brand new signer switches identity and
+        // triggers the reload above.
+        window.openNostrUpgrade = function () {
+            overlayCloseBtn.style.display = 'block';
+            overlay.style.display = 'flex';
+            loginUI.showLogin();
+        };
 
         const loginUI = new NostrLoginUI(
             document.getElementById('nostr-login-card'),
@@ -1699,8 +1748,25 @@
             || !!sessionStorage.getItem('pendingInviteToken');
         if (_pendingInvite && !auth.hasSavedSession()) {
             renderInviteIntro();
-        } else {
+        } else if (auth.hasSavedSession()) {
+            // Returning device: silently restore whatever kind of login was
+            // used last time — extension, remote signer, or a prior guest
+            // key — with no login screen shown.
             loginUI.start();
+        } else {
+            // First visit, no invite: never block on a login screen. Mint a
+            // silent local-device identity (the same primitive the invite
+            // flow's "create my key" button uses above) so the app is usable
+            // immediately. This is not a "real" Nostr identity — Settings
+            // and the nav offer "Sign in with Nostr" any time to add one,
+            // in place, without losing what was already entered.
+            try {
+                const pubkey = auth.connectGuest();
+                proceedConnected(pubkey, null);
+            } catch (e) {
+                console.error('Silent guest connect failed, falling back to login screen:', e);
+                loginUI.start();
+            }
         }
     </script>
 </body>

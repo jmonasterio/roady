@@ -4,8 +4,8 @@
   "description": "Equipment checklist management for band roadies and touring professionals",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#2c3e50",
-  "theme_color": "#2c3e50",
+  "background_color": "#0E0E10",
+  "theme_color": "#0E0E10",
   "orientation": "portrait-primary",
   "icons": [
     {

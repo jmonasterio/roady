@@ -92,6 +92,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
 
         // Authentication state
         isAuthenticated: false,
+        isGuestAccount:   false,     // true when running on a silent local device key (no real Nostr sign-in yet)
         nostrAvatarHtml:  '',
         nostrDisplayName: '',
         nostrNpub:        '',
@@ -539,6 +540,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
             this.nostrNpub = npub;
             this._nostrProfile = profile || null;
             this._hasNostrProfile = !!(profile && (profile.display_name || profile.name));
+            this.isGuestAccount = window.Auth?.getAccountType?.() === 'guest';
             this._applyNavIdentity();
         },
 
@@ -696,6 +698,7 @@ const MAX_DEVICES_PER_MEMBER = 5;
         reconnect() {
             this._stopRetry();
             this.signerOffline = false;
+            window.Auth?.clearSignerCooldown?.();
             // Manual reconnect: attempt NOW rather than sit through the 15s
             // first-backoff that only belongs to AUTOMATIC retries. On failure
             // _attemptReconnect falls into _scheduleRetry for the backoff ladder.
@@ -2077,6 +2080,13 @@ const MAX_DEVICES_PER_MEMBER = 5;
         dismissInstallHint() {
             this.showInstallHint = false;
             try { localStorage.setItem('roady_install_dismissed', '1'); } catch (_) {}
+        },
+        // "Not now" — hides for this visit only, reappears on the next
+        // startup. Distinct from dismissInstallHint()'s permanent opt-out
+        // (localStorage), since most visitors won't install on their first
+        // visit and a one-shot card would be the only instruction they ever get.
+        skipInstallHint() {
+            this.showInstallHint = false;
         },
 
         // ===============================================================

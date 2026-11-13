@@ -422,6 +422,29 @@ See `BAND_CREATION_FIX.md` for details.
 
 This is acceptable - member management is online-only per design.
 
+## Browser E2E identity
+
+Seed the **pinned E2E key** into the guest slot before the app boots, then take
+"Create a key on this device" — `connectGuest()` restores whatever hex is
+already in the slot instead of generating a new keypair:
+
+```js
+await tab.goto(`${BASE}/manifest.json`);   // same origin, no app JS yet
+await tab.evaluate(hex => localStorage.setItem('nostr_auth_roady_guest', hex),
+                   hex);   // ~/.config/mycouch-rs/e2e.key
+await tab.goto(`${BASE}/`);
+```
+
+Never **Generate** on the Local Dev Key card and never accept a fresh guest key:
+a new keypair is a new account to the backend, so the first sync mints a
+personal "My Band" tenant in **production** (the dev server proxies
+`/__api__/*` to the deployed worker) and nothing ever removes it. 81 such
+tenants and 345 orphan documents had accumulated across the apps by 2026-08-08.
+
+A test that must exercise first-run minting or the invite flow does generate
+keys — purge the leftovers afterwards with
+`../couch-sitter/scripts/purge-test-tenants.py` (dry-run by default).
+
 ## Git Workflow
 
 **Do NOT automatically commit changes.** Always leave git commits for the user to review and perform manually. Changes made during work should be staged and ready but not committed unless explicitly requested.

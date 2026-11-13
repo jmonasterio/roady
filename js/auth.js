@@ -52,6 +52,18 @@ window.Auth = {
         return this._auth?.getActivePubkey() || null;
     },
 
+    // 'nip07' | 'nip46' | 'guest' | 'local' | null. A 'guest' account is a
+    // silently-minted local device key (see index.html boot script) — real
+    // enough to sign every MNA1 request, but not backed up anywhere until
+    // the user carries its key into a real signer via "Sign in with Nostr".
+    getAccountType() {
+        return this._auth?.getActiveAccount()?.type || null;
+    },
+
+    isGuest() {
+        return this.getAccountType() === 'guest';
+    },
+
     getUser() {
         const p = this.getPubkey();
         return p ? { id: p, pubkey: p } : null;
@@ -115,6 +127,11 @@ window.Auth = {
     // ---------------------------------------------------------------
     async signMna1(url, method, body = null) {
         if (!this._auth) throw new Error('Nostr auth not available');
+        if (Date.now() < _signerDeadUntil) {
+            const waitS = Math.ceil((_signerDeadUntil - Date.now()) / 1000);
+            window.DLog?.push('sign', `\u2298 ${String(method).toUpperCase()} ${url} — signer known unreachable, skipping (cooldown ${waitS}s)`);
+            throw new Error('Signer is unreachable (recent timeout). Use Reconnect.');
+        }
         // The same-origin Pages Function at /__api__/[[path]] strips that
         // prefix before forwarding via service binding, so the bound worker
         // observes the URL without `/__api__`. Sign against the post-rewrite
@@ -175,9 +192,11 @@ window.Auth = {
                     )),
                 ]);
                 window.DLog?.push('sign', `✓ ${label} (${Date.now() - t0}ms)`);
+                _signerDeadUntil = 0;
                 return signed;
             } catch (e) {
                 window.DLog?.push('sign', `✗ ${label} — ${e?.message || e} (${Date.now() - t0}ms)`);
+                if (_isTimeoutError(e)) _signerDeadUntil = Date.now() + SIGNER_COOLDOWN_MS;
                 throw e;
             }
         });
@@ -189,6 +208,12 @@ window.Auth = {
         // non-Latin-1 characters survive the JSON serialization of an
         // event (pubkey, sig, ids are all hex; tags are ASCII).
         return btoa(JSON.stringify(signed));
+    },
+
+    // Manual escape hatch: a user-initiated reconnect should attempt right
+    // away, not wait out a cooldown armed by an earlier automatic failure.
+    clearSignerCooldown() {
+        _clearSignerCooldown();
     },
 
     // ---------------------------------------------------------------
@@ -241,6 +266,25 @@ window.Auth = {
 
 // At most one NIP-46 sign_event RPC in flight at a time — see signMna1.
 let _signQueue = Promise.resolve();
+
+// Circuit breaker: once a sign has timed out, every call within
+// SIGNER_COOLDOWN_MS fails immediately instead of re-paying the full
+// SIGN_TIMEOUT_MS wait for a signer that's already known unreachable. A cold
+// boot fires several authed requests back to back (tenant list, sync WS
+// hello, ...) — during an outage, each one paid its own 20s tax serially
+// through _signQueue before this existed. Cleared by any sign that actually
+// returns (success or an explicit rejection — the signer answering at all
+// means it's reachable), and by a manual reconnect (clearSignerCooldown).
+let _signerDeadUntil = 0;
+const SIGNER_COOLDOWN_MS = 15000;
+
+function _isTimeoutError(e) {
+    return e?.code === 'TIMEOUT' || /timed out|did not respond/i.test(e?.message || '');
+}
+
+function _clearSignerCooldown() {
+    _signerDeadUntil = 0;
+}
 
 function _bodyBytes(body) {
     if (body == null) return null;

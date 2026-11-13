@@ -2,7 +2,7 @@
 // Works great for both development and production!
 // No manual version bumping needed - always fetches latest from network
 
-const BUILD = '20260704u';
+const BUILD = '20260813c';
 const CACHE_NAME = 'roady-v1';
 // Version the runtime cache by build so stale ?v= assets and one-off
 // /?invite_token=… navigations don't accumulate forever — the activate

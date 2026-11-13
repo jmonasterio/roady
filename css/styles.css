@@ -144,6 +144,11 @@ section h3 {
     background: var(--pico-background-color);
 }
 
+/* Guest sign-in CTA lives in the title bar at every width, never buried
+   on the Band tab. Two labels swap by breakpoint — the mobile query
+   below shortens it instead of hiding it like .nav-user-details. */
+.nav-signin-btn .signin-short { display: none; }
+
 /* Tab rows — segmented control */
 .tab-buttons {
     display: flex;
@@ -868,11 +873,17 @@ main.container {
         margin-bottom: 0;
     }
 
-    /* Slim top bar: hide desktop links + user details, show sync dot */
+    /* Slim top bar: hide desktop links + user details, show sync dot.
+       The guest sign-in CTA is deliberately excluded from this hide
+       rule — it's the whole point of this fix — and gets the short
+       label instead so it still fits. */
     .top-nav .nav-links,
     .top-nav .nav-user-details {
         display: none !important;
     }
+
+    .nav-signin-btn .signin-full { display: none; }
+    .nav-signin-btn .signin-short { display: inline; }
 
     .top-nav {
         padding-top: env(safe-area-inset-top);
